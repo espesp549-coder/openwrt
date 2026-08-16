@@ -4005,3 +4005,18 @@ define Device/zyxel_wsm20
   KERNEL_INITRAMFS := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb | znet-header V1.00(ABZF.0)C0
 endef
 TARGET_DEVICES += zyxel_wsm20
+
+define Device/360t6m
+  $(Device/nand)
+  $(Device/uimage-lzma-loader)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 124416k
+  DEVICE_VENDOR := 360
+  DEVICE_MODEL := T6M
+  DEVICE_PACKAGES := kmod-mt7603 kmod-mt7615-firmware
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | \
+	append-ubi | check-size
+endef
+TARGET_DEVICES += 360t6m
