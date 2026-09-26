@@ -9,8 +9,8 @@ env:
   TARGET: ramips
   SUBTARGET: mt7621
   DEVICE_PKG: 360_t6m
-  DTS_FILE: mt7621_360t6m-fixed.dts
-  MK_SNIPPET: 360_t6m.mk
+  DTS_FILENAME: mt7621_360t6m-fixed.dts
+  MK_FILENAME: 360_t6m.mk
 
 jobs:
   build:
@@ -79,21 +79,22 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Inject custom DTS
+      - name: Locate and Inject custom DTS
         run: |
-          DTS_SRC="files/$DTS_FILE"
-          if [ ! -f "$DTS_SRC" ]; then
-            echo "ERROR: $DTS_SRC not found in repo — upload it under files/ first."
+          FOUND_DTS=$(find . -name "${{ env.DTS_FILENAME }}" | head -n 1)
+          if [ -z "$FOUND_DTS" ]; then
+            echo "ERROR: Could not find file '${{ env.DTS_FILENAME }}' in the repo!"
             exit 1
           fi
-          cp "$DTS_SRC" openwrt/target/linux/ramips/dts/
-          echo "DTS copied:"
-          ls -lh "openwrt/target/linux/ramips/dts/$DTS_FILE"
+          echo "Found DTS at: $FOUND_DTS"
+          cp "$FOUND_DTS" openwrt/target/linux/ramips/dts/${{ env.DTS_FILENAME }}
+          echo "DTS copied successfully."
 
       - name: Sanity-check DTS against mt7621.dtsi (fail fast, before full build)
         run: |
           cd openwrt
           DTS_DIR="target/linux/ramips/dts"
+          DTS_FILE="${{ env.DTS_FILENAME }}"
           make target/linux/prepare V=s -j$(nproc) || true
           KDIR=$(find build_dir -maxdepth 2 -type d -name "linux-ramips_mt7621*" | head -n1)
           if [ -z "$KDIR" ]; then
@@ -116,20 +117,21 @@ jobs:
           done
           echo "DTS sanity check passed successfully."
 
-      - name: Inject device definition into mt7621.mk
+      - name: Locate and Inject device definition into mt7621.mk
         run: |
-          MK_SRC="files/$MK_SNIPPET"
-          if [ ! -f "$MK_SRC" ]; then
-            echo "ERROR: $MK_SRC not found in repo — upload it under files/ first."
+          FOUND_MK=$(find . -name "${{ env.MK_FILENAME }}" | head -n 1)
+          if [ -z "$FOUND_MK" ]; then
+            echo "ERROR: Could not find file '${{ env.MK_FILENAME }}' in the repo!"
             exit 1
           fi
+          echo "Found MK snippet at: $FOUND_MK"
           cd openwrt
           MK=target/linux/ramips/image/mt7621.mk
           if grep -q "Device/${DEVICE_PKG}" "$MK"; then
             echo "Device/${DEVICE_PKG} already defined in $MK — skipping append."
           else
             echo "" >> "$MK"
-            cat "../$MK_SRC" >> "$MK"
+            cat "../$FOUND_MK" >> "$MK"
             echo "Appended device block to $MK"
           fi
 
@@ -296,3 +298,4 @@ jobs:
           name: Package-Repo-Official-360T6M-${{ github.run_number }}
           path: openwrt/bin/packages/*
           if-no-files-found: warn
+          
