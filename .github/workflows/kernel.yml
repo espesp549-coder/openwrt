@@ -1,16 +1,16 @@
-name: Build Optimized OpenWrt 24.10.8 Official for 360T6M
+name: Build OpenWrt 24.10.6 for 360T6M
 
 on:
   workflow_dispatch:
 
 env:
   REPO_URL: https://github.com/openwrt/openwrt
-  REPO_TAG: v24.10.8
+  REPO_TAG: v24.10.6
   TARGET: ramips
   SUBTARGET: mt7621
   DEVICE_PKG: 360_t6m
-  DTS_FILENAME: mt7621_360t6m-fixed.dts
-  MK_FILENAME: 360_t6m.mk
+  DTS_FILE: mt7621_360t6m-fixed.dts
+  MK_SNIPPET: 360_t6m.mk
 
 jobs:
   build:
@@ -45,7 +45,7 @@ jobs:
             rsync unzip zlib1g-dev file wget curl xsltproc libelf-dev \
             libfuse-dev libsnmp-dev swig ccache cmake zstd device-tree-compiler
 
-      - name: Clone Official OpenWrt source (${{ env.REPO_TAG }})
+      - name: Clone OpenWrt source (${{ env.REPO_TAG }})
         run: |
           git clone --branch openwrt-24.10 --single-branch --depth 1 $REPO_URL openwrt
           cd openwrt
@@ -61,17 +61,17 @@ jobs:
             openwrt/staging_dir/host
             openwrt/staging_dir/toolchain-*
             openwrt/build_dir/toolchain-*
-          key: toolchain-off-${{ env.REPO_TAG }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-${{ hashFiles('openwrt/include/kernel-*.mk', 'openwrt/toolchain/**') }}
+          key: toolchain-${{ env.REPO_TAG }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-${{ hashFiles('openwrt/include/kernel-*.mk', 'openwrt/toolchain/**') }}
           restore-keys: |
-            toolchain-off-${{ env.REPO_TAG }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-
+            toolchain-${{ env.REPO_TAG }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-
 
       - name: Cache downloaded package sources
         uses: actions/cache@v4
         with:
           path: openwrt/dl
-          key: dl-off-${{ env.REPO_TAG }}-${{ hashFiles('openwrt/feeds.conf.default') }}
+          key: dl-${{ env.REPO_TAG }}-${{ hashFiles('openwrt/feeds.conf.default') }}
           restore-keys: |
-            dl-off-${{ env.REPO_TAG }}-
+            dl-${{ env.REPO_TAG }}-
 
       - name: Update and install feeds
         run: |
@@ -79,22 +79,25 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
-      - name: Locate and Inject custom DTS
+      - name: Inject custom DTS
         run: |
-          FOUND_DTS=$(find . -name "${{ env.DTS_FILENAME }}" | head -n 1)
-          if [ -z "$FOUND_DTS" ]; then
-            echo "ERROR: Could not find file '${{ env.DTS_FILENAME }}' in the repo!"
+          DTS_SRC="files/$DTS_FILE"
+          if [ ! -f "$DTS_SRC" ]; then
+            echo "ERROR: $DTS_SRC not found in repo — upload it under files/ first."
             exit 1
           fi
-          echo "Found DTS at: $FOUND_DTS"
-          cp "$FOUND_DTS" openwrt/target/linux/ramips/dts/${{ env.DTS_FILENAME }}
-          echo "DTS copied successfully."
+          cp "$DTS_SRC" openwrt/target/linux/ramips/dts/
+          echo "DTS copied:"
+          ls -lh "openwrt/target/linux/ramips/dts/$DTS_FILE"
 
+      # ===== إضافة تحقق جديدة: نتأكد إن الـDTS يترجم فعليًا ويحتوي عقد الإيثرنت/السويتش
+      # الصحيحة قبل لا نضيع وقت ببناء كامل (30-60 دقيقة) لصورة راح تكون بلا شبكة =====
       - name: Sanity-check DTS against mt7621.dtsi (fail fast, before full build)
         run: |
           cd openwrt
           DTS_DIR="target/linux/ramips/dts"
-          DTS_FILE="${{ env.DTS_FILENAME }}"
+          # نحتاج مسارات include الخاصة بـdt-bindings من مصدر الكيرنل نفسه؛
+          # هذا يتطلب أول تحضير لشجرة الكيرنل (يسحبها make قبل الكومبايل الكامل)
           make target/linux/prepare V=s -j$(nproc) || true
           KDIR=$(find build_dir -maxdepth 2 -type d -name "linux-ramips_mt7621*" | head -n1)
           if [ -z "$KDIR" ]; then
@@ -112,59 +115,28 @@ jobs:
           for pattern in "mediatek,mt7621-ethsys" "mediatek,mt7621-eth" "mediatek,mt7621" "label = \"lan1\"" "label = \"lan2\"" "label = \"lan3\"" "label = \"wan\""; do
             if ! grep -q -- "$pattern" /tmp/360t6m.decompiled.dts; then
               echo "ERROR: expected pattern not found in compiled devicetree: $pattern"
+              echo "الـDTS المُصرَّف ناقص هذا العنصر — يعني الشبكة ما راح تشتغل. أوقفنا البناء قبل لا نضيع وقت."
               exit 1
             fi
           done
-          echo "DTS sanity check passed successfully."
+          echo "DTS sanity check passed: ethsys + eth + switch + all 4 port labels present."
 
-      - name: Locate and Inject device definition into mt7621.mk
+      - name: Inject device definition into mt7621.mk
         run: |
-          FOUND_MK=$(find . -name "${{ env.MK_FILENAME }}" | head -n 1)
-          if [ -z "$FOUND_MK" ]; then
-            echo "ERROR: Could not find file '${{ env.MK_FILENAME }}' in the repo!"
+          MK_SRC="files/$MK_SNIPPET"
+          if [ ! -f "$MK_SRC" ]; then
+            echo "ERROR: $MK_SRC not found in repo — upload it under files/ first."
             exit 1
           fi
-          echo "Found MK snippet at: $FOUND_MK"
           cd openwrt
           MK=target/linux/ramips/image/mt7621.mk
           if grep -q "Device/${DEVICE_PKG}" "$MK"; then
             echo "Device/${DEVICE_PKG} already defined in $MK — skipping append."
           else
             echo "" >> "$MK"
-            cat "../$FOUND_MK" >> "$MK"
+            cat "../$MK_SRC" >> "$MK"
             echo "Appended device block to $MK"
           fi
-
-      - name: Inject v2rayA opkg feed (key + repo) into image
-        run: |
-          mkdir -p openwrt/files/etc/opkg/keys
-          curl -fsSL https://downloads.sourceforge.net/project/v2raya/openwrt/v2raya.pub \
-            -o openwrt/files/etc/opkg/keys/94cc2a834fb0aa03
-          mkdir -p openwrt/files/etc/opkg
-          cat << 'EOF' >> openwrt/files/etc/opkg/customfeeds.conf
-          src/gz v2raya https://downloads.sourceforge.net/project/v2raya/openwrt/mipsel_24kc
-          EOF
-          echo "v2rayA feed key + repo baked into image."
-
-      - name: Inject TTL rewrite rule (nftables, TTL=65)
-        run: |
-          mkdir -p openwrt/files/usr/share/nftables.d/chain-pre/mangle_postrouting
-          echo "ip ttl set 65" > openwrt/files/usr/share/nftables.d/chain-pre/mangle_postrouting/01-set-ttl.nft
-          echo "TTL rule injected."
-
-      - name: Set default WiFi SSIDs and password
-        run: |
-          mkdir -p openwrt/files/etc/uci-defaults
-          cat << 'EOF' > openwrt/files/etc/uci-defaults/97_wifi_names
-          #!/bin/sh
-          uci set wireless.default_radio0.ssid='2.44'
-          uci set wireless.default_radio0.key='12345678'
-          uci set wireless.default_radio1.ssid='5G5'
-          uci set wireless.default_radio1.key='12345678'
-          uci commit wireless
-          exit 0
-          EOF
-          chmod +x openwrt/files/etc/uci-defaults/97_wifi_names
 
       - name: Inject Performance & Kernel Optimizations (sysctl.conf)
         run: |
@@ -184,7 +156,10 @@ jobs:
           EOF
           echo "Performance sysctl.conf injected successfully."
 
-      - name: Enable flow offloading + generate .config for 24.10 Official
+      # ملاحظة: حذفنا kmod-mt7603 و kmod-mt7615 من هنا — الشريحة الحقيقية حسب
+      # DEVICE_PACKAGES بملف 360_t6m.mk هي MT7915 (kmod-mt7915e)، وهذا يُضاف
+      # تلقائيًا من تعريف الجهاز نفسه بغض النظر عن .config. تكرارها هنا زيادة بلا فايدة.
+      - name: Enable flow offloading + generate .config for 24.10
         run: |
           cd openwrt
           cat << 'EOF' > .config
@@ -200,52 +175,18 @@ jobs:
           CONFIG_NETFILTER_XT_MATCH_SOCKET=y
           CONFIG_NF_CONNTRACK_MARK=y
           CONFIG_PACKAGE_kmod-nft-offload=y
-
-          CONFIG_PACKAGE_kmod-tun=y
-          CONFIG_PACKAGE_kmod-nft-tproxy=y
-          CONFIG_PACKAGE_kmod-nft-socket=y
-
-          # حل مشكلة التعارض: إلغاء dnsmasq العادي واستبداله بـ dnsmasq-full
-          # CONFIG_PACKAGE_dnsmasq is not set
-          CONFIG_PACKAGE_dnsmasq-full=y
-          CONFIG_PACKAGE_dnsmasq_full_ipset=y
-          CONFIG_PACKAGE_dnsmasq_full_nftset=y
-
-          CONFIG_PACKAGE_kmod-tcp-bbr=y
-
-          CONFIG_PACKAGE_ip-full=y
-          CONFIG_PACKAGE_resolveip=y
-          CONFIG_PACKAGE_ipset=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_libustream-openssl=y
-          CONFIG_PACKAGE_bash=y
-
-          CONFIG_PACKAGE_kmod-wireguard=y
-          CONFIG_PACKAGE_wireguard-tools=y
-          CONFIG_PACKAGE_kmod-zram=y
-          CONFIG_PACKAGE_zram-swap=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_nano=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_iptables-nft=y
-          CONFIG_PACKAGE_ip6tables-nft=y
-          CONFIG_PACKAGE_kmod-nf-conncount=y
-          CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_unzip=y
-          CONFIG_PACKAGE_luci-ssl-openssl=y
           EOF
           make defconfig
 
-      - name: Enable flow offloading in firewall defaults (software-only, fullcone off)
+      # ملاحظة: hw='0' مو '1' — هذا الإصلاح المؤكد لمشكلة Double NAT اللي
+      # عانينا منها سابقًا، وما إله علاقة بمشكلة الإقلاع (سطر UCI ساكن بالفايروول).
+      - name: Enable flow offloading in firewall defaults
         run: |
           mkdir -p openwrt/files/etc/uci-defaults
           cat << 'EOF' > openwrt/files/etc/uci-defaults/98_flow_offloading
           #!/bin/sh
           uci set firewall.@defaults[0].flow_offloading='1'
           uci set firewall.@defaults[0].flow_offloading_hw='0'
-          uci set firewall.@defaults[0].fullcone='0'
-          uci set firewall.@zone[1].fullcone='0'
           uci commit firewall
           exit 0
           EOF
@@ -289,15 +230,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Official-OpenWrt-24.10.8-360T6M-${{ github.run_number }}
+          name: OpenWrt-24.10.6-360T6M-${{ github.run_number }}
           path: openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*
           if-no-files-found: error
-
-      - name: Upload full package repository
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Package-Repo-Official-360T6M-${{ github.run_number }}
-          path: openwrt/bin/packages/*
-          if-no-files-found: warn
-          
