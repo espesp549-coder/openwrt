@@ -11,6 +11,7 @@ define Device/360_t6m
   KERNEL_LOADADDR := 0x80001000
   KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
   DEVICE_PACKAGES := kmod-mt76-connac kmod-mt76-core kmod-mt7915-firmware kmod-mt7915e kmod-tun kmod-nft-tproxy wpad-openssl luci luci-ssl-openssl dropbear
+  SUPPORTED_DEVICES := 360,360t6m
   IMAGES += factory.bin
   IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
