@@ -1,11 +1,11 @@
-name: Build OpenWrt 24.10.6 for 360T6M
+name: Build OpenWrt 24.10.8 for 360T6M
 
 on:
   workflow_dispatch:
 
 env:
   REPO_URL: https://github.com/openwrt/openwrt
-  REPO_TAG: v24.10.6
+  REPO_TAG: v24.10.8
   TARGET: ramips
   SUBTARGET: mt7621
   DEVICE_PKG: 360_t6m
@@ -90,14 +90,13 @@ jobs:
           echo "DTS copied:"
           ls -lh "openwrt/target/linux/ramips/dts/$DTS_FILE"
 
-      # ===== إضافة تحقق جديدة: نتأكد إن الـDTS يترجم فعليًا ويحتوي عقد الإيثرنت/السويتش
-      # الصحيحة قبل لا نضيع وقت ببناء كامل (30-60 دقيقة) لصورة راح تكون بلا شبكة =====
+      # ===== إضافة تحقق: نتأكد إن الـDTS يترجم فعليًا ويحتوي عقد الإيثرنت/السويتش
+      # الصحيحة قبل لا نضيع وقت ببناء كامل — مهم بشكل خاص عند ترقية رقم الإصدار
+      # (24.10.6 → 24.10.8) لأن bindings الكيرنل ممكن تختلف شوي بين الإصدارات =====
       - name: Sanity-check DTS against mt7621.dtsi (fail fast, before full build)
         run: |
           cd openwrt
           DTS_DIR="target/linux/ramips/dts"
-          # نحتاج مسارات include الخاصة بـdt-bindings من مصدر الكيرنل نفسه؛
-          # هذا يتطلب أول تحضير لشجرة الكيرنل (يسحبها make قبل الكومبايل الكامل)
           make target/linux/prepare V=s -j$(nproc) || true
           KDIR=$(find build_dir -maxdepth 2 -type d -name "linux-ramips_mt7621*" | head -n1)
           if [ -z "$KDIR" ]; then
@@ -111,15 +110,15 @@ jobs:
           dtc -@ -I dts -O dtb -o /tmp/360t6m.dtb /tmp/360t6m.pre.dts
           dtc -I dtb -O dts /tmp/360t6m.dtb > /tmp/360t6m.decompiled.dts
 
-          echo "== Checking for required 24.10/kernel-6.6 ethernet nodes =="
-          for pattern in "mediatek,mt7621-ethsys" "mediatek,mt7621-eth" "mediatek,mt7621" "label = \"lan1\"" "label = \"lan2\"" "label = \"lan3\"" "label = \"wan\""; do
+          echo "== Checking for required ethernet/switch/NMBM nodes =="
+          for pattern in "mediatek,mt7621-ethsys" "mediatek,mt7621-eth" "mediatek,mt7621" "label = \"lan1\"" "label = \"lan2\"" "label = \"lan3\"" "label = \"wan\"" "mediatek,nmbm"; do
             if ! grep -q -- "$pattern" /tmp/360t6m.decompiled.dts; then
               echo "ERROR: expected pattern not found in compiled devicetree: $pattern"
-              echo "الـDTS المُصرَّف ناقص هذا العنصر — يعني الشبكة ما راح تشتغل. أوقفنا البناء قبل لا نضيع وقت."
+              echo "الـDTS المُصرَّف ناقص هذا العنصر — أوقفنا البناء قبل لا نضيع وقت."
               exit 1
             fi
           done
-          echo "DTS sanity check passed: ethsys + eth + switch + all 4 port labels present."
+          echo "DTS sanity check passed: ethsys + eth + switch + all 4 port labels + NMBM present."
 
       - name: Inject device definition into mt7621.mk
         run: |
@@ -178,8 +177,7 @@ jobs:
           EOF
           make defconfig
 
-      # ملاحظة: hw='0' مو '1' — هذا الإصلاح المؤكد لمشكلة Double NAT اللي
-      # عانينا منها سابقًا، وما إله علاقة بمشكلة الإقلاع (سطر UCI ساكن بالفايروول).
+      # ملاحظة: hw='0' — إصلاح مؤكد لمشكلة Double NAT سابقة، ما إله علاقة بالإقلاع.
       - name: Enable flow offloading in firewall defaults
         run: |
           mkdir -p openwrt/files/etc/uci-defaults
@@ -191,6 +189,42 @@ jobs:
           exit 0
           EOF
           chmod +x openwrt/files/etc/uci-defaults/98_flow_offloading
+
+      # LED: الأخضر (green:system) يصير مؤشر التشغيل الثابت، الأحمر (red:power) مطفي دائمًا.
+      # MAC: عشوائي فريد بكل جهاز عند أول إقلاع (مو من nvmem المصنع، اللي احتمال
+      # يكون مكرر بين نسخك المتعددة من نفس صورة الفيرموير) — لكل من br-lan والراديوين.
+      - name: Set LED status and generate unique random MAC per device
+        run: |
+          mkdir -p openwrt/files/etc/uci-defaults
+          cat << 'EOF' > openwrt/files/etc/uci-defaults/97_led_and_mac
+          #!/bin/sh
+
+          # ===== LED =====
+          uci set system.led_status='led'
+          uci set system.led_status.name='status'
+          uci set system.led_status.sysfs='green:system'
+          uci set system.led_status.trigger='default-on'
+          uci set system.led_off='led'
+          uci set system.led_off.name='power-red-off'
+          uci set system.led_off.sysfs='red:power'
+          uci set system.led_off.trigger='none'
+          uci commit system
+
+          # ===== ماك عشوائي فريد لكل جهاز (يولد وقت أول إقلاع، مختلف بكل نسخة) =====
+          RAND_MAC_LAN="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
+          RAND_MAC_R0="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
+          RAND_MAC_R1="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
+
+          uci set network.lan.macaddr="$RAND_MAC_LAN"
+          uci commit network
+
+          uci set wireless.radio0.macaddr="$RAND_MAC_R0"
+          uci set wireless.radio1.macaddr="$RAND_MAC_R1"
+          uci commit wireless
+
+          exit 0
+          EOF
+          chmod +x openwrt/files/etc/uci-defaults/97_led_and_mac
 
       - name: Download package sources
         run: |
@@ -230,6 +264,6 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt-24.10.6-360T6M-${{ github.run_number }}
+          name: OpenWrt-24.10.8-360T6M-${{ github.run_number }}
           path: openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*
           if-no-files-found: error
