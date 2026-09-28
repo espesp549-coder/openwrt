@@ -1,0 +1,23 @@
+#!/bin/sh
+
+# 1. جلب إصدار OpenWrt والمعمارية تلقائياً من النظام
+RELEASE=$(cat /etc/openwrt_release | grep DISTRIB_RELEASE | cut -d"'" -f2)
+TARGET=$(cat /etc/openwrt_release | grep DISTRIB_TARGET | cut -d"'" -f2)
+
+# 2. سحب الـ Vermagic الرسمي الخاص بالنسخة والمعمارية من سيرفر OpenWrt
+OFFICIAL_VERMAGIC=$(wget -qO- "https://downloads.openwrt.org/releases/${RELEASE}/targets/${TARGET}/packages/Packages.gz" | zcat | grep -A10 '^Package: kernel$' | grep '^Version:' | cut -d' ' -f2)
+
+# 3. تحديث بصمة الكيرنل في سجلات opkg لتتطابق مع السيرفر الرسمي
+if [ -n "$OFFICIAL_VERMAGIC" ]; then
+    # تعديل ملف معلومات الكيرنل الرئيسي
+    if [ -f /usr/lib/opkg/info/kernel.control ]; then
+        sed -i "s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/info/kernel.control
+    fi
+
+    # تعديل ملف حالة الحزم المثبتة
+    if [ -f /usr/lib/opkg/status ]; then
+        sed -i "/^Package: kernel$/,/^$/s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/status
+    fi
+fi
+
+exit 0
