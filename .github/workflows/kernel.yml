@@ -1,7 +1,10 @@
-name: Build OpenWrt 24.10.8 for 360T6M
+name: Build OpenWrt 24.10.8 for 360T6M (with self-hosted package repo)
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 env:
   REPO_URL: https://github.com/openwrt/openwrt
@@ -11,6 +14,7 @@ env:
   DEVICE_PKG: 360_t6m
   DTS_FILE: mt7621_360t6m-fixed.dts
   MK_SNIPPET: 360_t6m.mk
+  PKG_ARCH: mipsel_24kc
 
 jobs:
   build:
@@ -78,6 +82,11 @@ jobs:
           cd openwrt
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+
+      # ===== أضفنا HomeProxy لأنه مو موجود بالمستودع الرسمي =====
+      - name: Add HomeProxy package
+        run: |
+          git clone --depth 1 https://github.com/immortalwrt/homeproxy openwrt/package/luci-app-homeproxy
 
       - name: Inject custom DTS
         run: |
@@ -152,6 +161,9 @@ jobs:
           EOF
           echo "Performance sysctl.conf injected successfully."
 
+      # ===== ALL_KMODS=y يبني كل الـkmods كحزم ipk منفصلة (ما تنحط بالصورة)
+      # حتى ما تحتاج تعيد البناء كل ما تحتاج kmod جديد — تصير موجودة بريبوك الخاص.
+      # وأضفنا sing-box وluci-app-homeproxy بما إنهم مطلوبين بهذا البناء بالذات =====
       - name: Enable flow offloading + generate .config for 24.10
         run: |
           cd openwrt
@@ -168,6 +180,9 @@ jobs:
           CONFIG_NETFILTER_XT_MATCH_SOCKET=y
           CONFIG_NF_CONNTRACK_MARK=y
           CONFIG_PACKAGE_kmod-nft-offload=y
+          CONFIG_ALL_KMODS=y
+          CONFIG_PACKAGE_sing-box=y
+          CONFIG_PACKAGE_luci-app-homeproxy=y
           EOF
           make defconfig
 
@@ -183,6 +198,8 @@ jobs:
           EOF
           chmod +x openwrt/files/etc/uci-defaults/98_flow_offloading
 
+      # LED: الأخضر (green:system) يصير مؤشر التشغيل الثابت، الأحمر (red:power) مطفي دائمًا.
+      # MAC: عشوائي فريد بكل جهاز عند أول إقلاع، لكل من br-lan والراديوين.
       - name: Set LED status and generate unique random MAC per device
         run: |
           mkdir -p openwrt/files/etc/uci-defaults
@@ -200,52 +217,15 @@ jobs:
           uci set system.led_off.trigger='none'
           uci commit system
 
-          # ===== ماك عشوائي فريد لكل جهاز =====
+          # ===== ماك عشوائي فريد لكل جهاز (يولد وقت أول إقلاع، مختلف بكل نسخة) =====
           RAND_MAC_LAN="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
-          RAND_MAC_R0="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
-          RAND_MAC_R1="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
 
           uci set network.lan.macaddr="$RAND_MAC_LAN"
           uci commit network
 
-          uci set wireless.radio0.macaddr="$RAND_MAC_R0"
-          uci set wireless.radio1.macaddr="$RAND_MAC_R1"
-          uci commit wireless
-
           exit 0
           EOF
           chmod +x openwrt/files/etc/uci-defaults/97_led_and_mac
-
-      # ===== نسخ مجلد files الرئيسي إن وجد وحقن سكريبت تزوير الـ Vermagic =====
-      - name: Copy repository files & Inject Vermagic Spoofing Script
-        run: |
-          # 1. نسخ الملفات الموجودة بمجلد files/ الرئيسي إلى openwrt/files/
-          if [ -d "files" ]; then
-            mkdir -p openwrt/files
-            rsync -av --exclude="$DTS_FILE" --exclude="$MK_SNIPPET" files/ openwrt/files/
-          fi
-
-          # 2. إنشاء وإنشاء سكريبت تزوير الـ Vermagic المباشر
-          mkdir -p openwrt/files/etc/uci-defaults
-          cat << 'EOF' > openwrt/files/etc/uci-defaults/99-fix-vermagic
-          #!/bin/sh
-
-          RELEASE=$(cat /etc/openwrt_release | grep DISTRIB_RELEASE | cut -d"'" -f2)
-          TARGET=$(cat /etc/openwrt_release | grep DISTRIB_TARGET | cut -d"'" -f2)
-
-          OFFICIAL_VERMAGIC=$(wget -qO- "https://downloads.openwrt.org/releases/${RELEASE}/targets/${TARGET}/packages/Packages.gz" | zcat | grep -A10 '^Package: kernel$' | grep '^Version:' | cut -d' ' -f2)
-
-          if [ -n "$OFFICIAL_VERMAGIC" ]; then
-              [ -f /usr/lib/opkg/info/kernel.control ] && sed -i "s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/info/kernel.control
-              [ -f /usr/lib/opkg/status ] && sed -i "/^Package: kernel$/,/^$/s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/status
-          fi
-
-          exit 0
-          EOF
-
-          # 3. منح صلاحية التنفيذ المباشرة لكل سكريبتات uci-defaults
-          chmod +x openwrt/files/etc/uci-defaults/*
-          echo "Vermagic script injected & permissions updated successfully."
 
       - name: Download package sources
         run: |
@@ -288,4 +268,47 @@ jobs:
           name: OpenWrt-24.10.8-360T6M-${{ github.run_number }}
           path: openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*
           if-no-files-found: error
-          
+
+      # ===== جمع كل مجلدات الحزم (kmods + luci + base + packages + routing)
+      # بهيكلية تطابق شكل opkg feed، حتى نرفعها كـريبو حزم كامل =====
+      - name: Collect package repo (all kmods + packages built for this exact kernel)
+        if: success()
+        run: |
+          mkdir -p pkg-repo/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/packages
+          cp -r openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/packages/* \
+            pkg-repo/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/packages/
+
+          for cat in base luci packages routing telephony; do
+            if [ -d "openwrt/bin/packages/${{ env.PKG_ARCH }}/$cat" ]; then
+              mkdir -p "pkg-repo/packages/${{ env.PKG_ARCH }}/$cat"
+              cp -r "openwrt/bin/packages/${{ env.PKG_ARCH }}/$cat"/* \
+                "pkg-repo/packages/${{ env.PKG_ARCH }}/$cat/"
+            fi
+          done
+
+          echo "Package repo layout:"
+          find pkg-repo -maxdepth 3 -type d
+
+      # ===== رفع الريبو على فرع gh-pages — هذا اللي يصير رابط opkg feed مالك.
+      # يحتاج Settings → Pages → Source: gh-pages branch مفعّل مرة وحدة يدوياً =====
+      - name: Publish package repo to GitHub Pages
+        if: success()
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./pkg-repo
+          publish_branch: gh-pages
+          keep_files: false
+
+      - name: Print opkg feed URLs for this build
+        if: success()
+        run: |
+          echo "======================================================"
+          echo "أضف هذا لملف /etc/opkg/customfeeds.conf على الراوتر:"
+          echo ""
+          echo "src/gz my_core https://${{ github.repository_owner }}.github.io/$(basename ${{ github.repository }})/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/packages"
+          echo "src/gz my_base https://${{ github.repository_owner }}.github.io/$(basename ${{ github.repository }})/packages/${{ env.PKG_ARCH }}/base"
+          echo "src/gz my_luci https://${{ github.repository_owner }}.github.io/$(basename ${{ github.repository }})/packages/${{ env.PKG_ARCH }}/luci"
+          echo "src/gz my_packages https://${{ github.repository_owner }}.github.io/$(basename ${{ github.repository }})/packages/${{ env.PKG_ARCH }}/packages"
+          echo "src/gz my_routing https://${{ github.repository_owner }}.github.io/$(basename ${{ github.repository }})/packages/${{ env.PKG_ARCH }}/routing"
+          echo "======================================================"
