@@ -90,9 +90,6 @@ jobs:
           echo "DTS copied:"
           ls -lh "openwrt/target/linux/ramips/dts/$DTS_FILE"
 
-      # ===== إضافة تحقق: نتأكد إن الـDTS يترجم فعليًا ويحتوي عقد الإيثرنت/السويتش
-      # الصحيحة قبل لا نضيع وقت ببناء كامل — مهم بشكل خاص عند ترقية رقم الإصدار
-      # (24.10.6 → 24.10.8) لأن bindings الكيرنل ممكن تختلف شوي بين الإصدارات =====
       - name: Sanity-check DTS against mt7621.dtsi (fail fast, before full build)
         run: |
           cd openwrt
@@ -155,9 +152,6 @@ jobs:
           EOF
           echo "Performance sysctl.conf injected successfully."
 
-      # ملاحظة: حذفنا kmod-mt7603 و kmod-mt7615 من هنا — الشريحة الحقيقية حسب
-      # DEVICE_PACKAGES بملف 360_t6m.mk هي MT7915 (kmod-mt7915e)، وهذا يُضاف
-      # تلقائيًا من تعريف الجهاز نفسه بغض النظر عن .config. تكرارها هنا زيادة بلا فايدة.
       - name: Enable flow offloading + generate .config for 24.10
         run: |
           cd openwrt
@@ -177,7 +171,6 @@ jobs:
           EOF
           make defconfig
 
-      # ملاحظة: hw='0' — إصلاح مؤكد لمشكلة Double NAT سابقة، ما إله علاقة بالإقلاع.
       - name: Enable flow offloading in firewall defaults
         run: |
           mkdir -p openwrt/files/etc/uci-defaults
@@ -190,9 +183,6 @@ jobs:
           EOF
           chmod +x openwrt/files/etc/uci-defaults/98_flow_offloading
 
-      # LED: الأخضر (green:system) يصير مؤشر التشغيل الثابت، الأحمر (red:power) مطفي دائمًا.
-      # MAC: عشوائي فريد بكل جهاز عند أول إقلاع (مو من nvmem المصنع، اللي احتمال
-      # يكون مكرر بين نسخك المتعددة من نفس صورة الفيرموير) — لكل من br-lan والراديوين.
       - name: Set LED status and generate unique random MAC per device
         run: |
           mkdir -p openwrt/files/etc/uci-defaults
@@ -210,7 +200,7 @@ jobs:
           uci set system.led_off.trigger='none'
           uci commit system
 
-          # ===== ماك عشوائي فريد لكل جهاز (يولد وقت أول إقلاع، مختلف بكل نسخة) =====
+          # ===== ماك عشوائي فريد لكل جهاز =====
           RAND_MAC_LAN="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
           RAND_MAC_R0="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
           RAND_MAC_R1="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
@@ -225,6 +215,37 @@ jobs:
           exit 0
           EOF
           chmod +x openwrt/files/etc/uci-defaults/97_led_and_mac
+
+      # ===== نسخ مجلد files الرئيسي إن وجد وحقن سكريبت تزوير الـ Vermagic =====
+      - name: Copy repository files & Inject Vermagic Spoofing Script
+        run: |
+          # 1. نسخ الملفات الموجودة بمجلد files/ الرئيسي إلى openwrt/files/
+          if [ -d "files" ]; then
+            mkdir -p openwrt/files
+            rsync -av --exclude="$DTS_FILE" --exclude="$MK_SNIPPET" files/ openwrt/files/
+          fi
+
+          # 2. إنشاء وإنشاء سكريبت تزوير الـ Vermagic المباشر
+          mkdir -p openwrt/files/etc/uci-defaults
+          cat << 'EOF' > openwrt/files/etc/uci-defaults/99-fix-vermagic
+          #!/bin/sh
+
+          RELEASE=$(cat /etc/openwrt_release | grep DISTRIB_RELEASE | cut -d"'" -f2)
+          TARGET=$(cat /etc/openwrt_release | grep DISTRIB_TARGET | cut -d"'" -f2)
+
+          OFFICIAL_VERMAGIC=$(wget -qO- "https://downloads.openwrt.org/releases/${RELEASE}/targets/${TARGET}/packages/Packages.gz" | zcat | grep -A10 '^Package: kernel$' | grep '^Version:' | cut -d' ' -f2)
+
+          if [ -n "$OFFICIAL_VERMAGIC" ]; then
+              [ -f /usr/lib/opkg/info/kernel.control ] && sed -i "s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/info/kernel.control
+              [ -f /usr/lib/opkg/status ] && sed -i "/^Package: kernel$/,/^$/s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/status
+          fi
+
+          exit 0
+          EOF
+
+          # 3. منح صلاحية التنفيذ المباشرة لكل سكريبتات uci-defaults
+          chmod +x openwrt/files/etc/uci-defaults/*
+          echo "Vermagic script injected & permissions updated successfully."
 
       - name: Download package sources
         run: |
@@ -267,3 +288,4 @@ jobs:
           name: OpenWrt-24.10.8-360T6M-${{ github.run_number }}
           path: openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*
           if-no-files-found: error
+          
