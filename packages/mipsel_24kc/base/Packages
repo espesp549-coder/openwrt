@@ -1,0 +1,1515 @@
+Package: airoha-en8811h-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 153600
+Filename: airoha-en8811h-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 56988
+SHA256sum: 1f4f94c7328d9b061b0fa67bf75fe37bde18c01d862bd6125760d9142808de66
+Description:  Airoha EN8811H 2.5G Ethernet PHY firmware
+
+Package: ar3k-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1597440
+Filename: ar3k-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 979975
+SHA256sum: 81c508e53ad9211414cd5d3ba5d77614e5cf20c683776b9a07439297e429b0b9
+Description:  ath3k firmware
+
+Package: ath9k-htc-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 133120
+Filename: ath9k-htc-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 62425
+SHA256sum: 600aece71159ddd56d413b6ec662298e9f4df579f9781b30a5a199f9669e9ada
+Description:  AR9271/AR7010 firmware
+
+Package: bnx2-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 225280
+Filename: bnx2-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 105867
+SHA256sum: 3427a8a35728f6d460616e8053b790505ee3fc68ad097b0a2e3ccd0ac8ccb670
+Description:  Broadcom BCM5706/5708/5709/5716 firmware
+
+Package: bnx2x-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 2703360
+Filename: bnx2x-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 2415547
+SHA256sum: 3bf4dace9f99c1620881a6ddc161a3f5fefe09554c7fbcbe6895e2063d9bb248
+Description:  =QLogic 5771x/578xx firmware
+
+Package: brcmfmac-firmware-usb
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 757760
+Filename: brcmfmac-firmware-usb_20241110-r2_mipsel_24kc.ipk
+Size: 503743
+SHA256sum: aac8dc11a791f68e5c38039fb38a5ac4aa6bd0803759e467d3c3c2abb3b63b04
+Description:  Broadcom BCM43xx fullmac USB firmware
+
+Package: busybox
+Version: 1.36.1-r3
+Depends: libc
+Conflicts: busybox-selinux
+License: GPL-2.0
+Section: base
+URL: http://busybox.net/
+CPE-ID: cpe:/a:busybox:busybox
+Essential: yes
+Architecture: mipsel_24kc
+Installed-Size: 419840
+Filename: busybox_1.36.1-r3_mipsel_24kc.ipk
+Size: 213624
+SHA256sum: 49c7eccc2d5bd752e9e67dbd2304978383530f4c1e075a0564ecd44ce4916f7e
+Description:  The Swiss Army Knife of embedded Linux.
+ It slices, it dices, it makes Julian Fries.
+
+Package: ca-bundle
+Version: 20260601-r1
+Depends: libc
+Provides: ca-certs
+License: GPL-2.0-or-later MPL-2.0
+Section: base
+Architecture: all
+Installed-Size: 194560
+Filename: ca-bundle_20260601-r1_all.ipk
+Size: 107828
+SHA256sum: a0eb1c486840d5e15bb66344268f7f81bd92f78787f2310da351c1332167e673
+Description:  System CA certificates as a bundle
+
+Package: carl9170-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 20480
+Filename: carl9170-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 10547
+SHA256sum: 89038015f622c93be7bffa511323790444f56121ffdc585936e6e4072d59916e
+Description:  AR9170 firmware
+
+Package: dnsmasq
+Version: 2.93-r1
+Depends: libc, libubus20250102
+License: GPL-2.0
+Section: net
+URL: http://www.thekelleys.org.uk/dnsmasq/
+CPE-ID: cpe:/a:thekelleys:dnsmasq
+Architecture: mipsel_24kc
+Installed-Size: 337920
+Filename: dnsmasq_2.93-r1_mipsel_24kc.ipk
+Size: 146158
+SHA256sum: c356481e0bfb71cb41c963a45d90d2adb3c020657bdce01510aebf841bf53574
+Description:  It is intended to provide coupled DNS and DHCP service to a LAN.
+
+Package: e100-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 10240
+Filename: e100-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 1597
+SHA256sum: ff1c6fe9c7722031a778ba0c5260a4c2f86334c47dc6ffa0c000af14afd8e91e
+Description:  Intel e100
+
+Package: edgeport-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 61440
+Filename: edgeport-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 19620
+SHA256sum: 03a095fe21dedc8bf0c0b98ca0fbf8a65eec5e24275224a4538ecaac83cee36c
+Description:  USB Inside Out Edgeport Serial Driver firmware
+
+Package: firewall4
+Version: 2024.12.18~18fc0ead-r1
+Depends: ucode (>=2022.03.22), libc, kmod-nft-core, kmod-nft-fib, kmod-nft-offload, kmod-nft-nat, nftables-json, ucode, ucode-mod-fs, ucode-mod-ubus, ucode-mod-uci
+Provides: uci-firewall
+License: ISC
+Section: net
+Architecture: mipsel_24kc
+Installed-Size: 163840
+Filename: firewall4_2024.12.18~18fc0ead-r1_mipsel_24kc.ipk
+Size: 30118
+SHA256sum: 193afd04a289a1680d4f689d30c0897e0a6b5e86bc284dca180733f5d61295bb
+Description:  This package provides an nftables-based implementation of the UCI firewall
+ sharing the same configuration format.
+
+Package: getrandom
+Version: 2024.04.26~85f10530-r1
+Depends: libc
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: getrandom_2024.04.26~85f10530-r1_mipsel_24kc.ipk
+Size: 2310
+SHA256sum: 7167df413c8e5d6ca726157bdb3c87ed9a03c3cf7b412c0c5ade8f8d82f5696f
+Description:  OpenWrt getrandom system helper
+
+Package: hostapd-common
+Version: 2024.09.15~5ace39b0-r3
+Depends: libc
+License: BSD-3-Clause
+Section: net
+CPE-ID: cpe:/a:w1.fi:hostapd
+Architecture: mipsel_24kc
+Installed-Size: 20480
+Filename: hostapd-common_2024.09.15~5ace39b0-r3_mipsel_24kc.ipk
+Size: 2715
+SHA256sum: f264e6ee4e5933ec9f851d7fe312b891fd9ab322cdda1bfd40199c5135e53687
+Description:  hostapd/wpa_supplicant common support files
+
+Package: iw
+Version: 6.9-r1
+Depends: libc, libnl-tiny1
+License: GPL-2.0
+Section: net
+URL: http://wireless.kernel.org/en/users/Documentation/iw
+CPE-ID: cpe:/a:kernel:iw
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: iw_6.9-r1_mipsel_24kc.ipk
+Size: 46020
+SHA256sum: e46aef94ecb2d6345de3204b2604814be9525955edd3de9a56e51fdc93db8f03
+Description:  cfg80211 interface configuration utility
+
+Package: iwinfo
+Version: 2024.10.20~b94f066e-r1
+Depends: libc, libiwinfo20230701
+License: GPL-2.0
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: iwinfo_2024.10.20~b94f066e-r1_mipsel_24kc.ipk
+Size: 7357
+SHA256sum: a70b0e66cc1740bc9a50c35165e9b135e267b915ea2a6993ede90c52d39287f8
+Description:  Command line frontend for the wireless information library.
+
+Package: jansson4
+Version: 2.14-r3
+Depends: libc
+Provides: jansson
+License: MIT
+Section: libs
+URL: http://www.digip.org/jansson/
+ABIVersion: 4
+CPE-ID: cpe:/a:jansson_project:jansson
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: jansson4_2.14-r3_mipsel_24kc.ipk
+Size: 19653
+SHA256sum: 2d9e31dc61a2acbcced1be3ef9d9cdf822157b4b8ad81d066f88d71122a59a9e
+Description:  Jansson is a C library for encoding, decoding and manipulating JSON data
+
+Package: jshn
+Version: 2025.07.23~49056d17-r1
+Depends: libc, libjson-c5, libubox20240329, libblobmsg-json20240329
+License: ISC
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 81920
+Filename: jshn_2025.07.23~49056d17-r1_mipsel_24kc.ipk
+Size: 6696
+SHA256sum: 122ea9a01bb4c7b15de227537c4f186b06e109d170f585660377462345e64934
+Description:  Library for parsing and generating JSON from shell scripts
+
+Package: jsonfilter
+Version: 2025.04.18~8a86fb78-r1
+Depends: libc, libubox20240329, libjson-c5
+License: ISC
+Section: base
+URL: https://git.openwrt.org/project/jsonpath.git
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: jsonfilter_2025.04.18~8a86fb78-r1_mipsel_24kc.ipk
+Size: 8939
+SHA256sum: 00797a899fe8bd05f175759caad05a0298e23ecdf8c56b952997cf20cc13662b
+Description:  OpenWrt JSON filter utility
+
+Package: libblobmsg-json20240329
+Version: 2025.07.23~49056d17-r1
+Depends: libc, libjson-c5, libubox20240329
+Provides: libblobmsg-json
+License: ISC
+Section: libs
+ABIVersion: 20240329
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libblobmsg-json20240329_2025.07.23~49056d17-r1_mipsel_24kc.ipk
+Size: 4622
+SHA256sum: 6d0f70b38f065034d56b36bb28562ee40e82c18e600a405e0c8e8856775a7c30
+Description:  blobmsg <-> json conversion library
+
+Package: libiwinfo-data
+Version: 2024.10.20~b94f066e-r1
+Depends: libc
+License: GPL-2.0
+Section: opt
+Architecture: mipsel_24kc
+Installed-Size: 30720
+Filename: libiwinfo-data_2024.10.20~b94f066e-r1_mipsel_24kc.ipk
+Size: 3938
+SHA256sum: eeca4b4ed40ca27fb3d462776662cdfeec127152382e2f678a1c717a6ff15f26
+Description:  libiwinfo Lua binding
+
+Package: libiwinfo20230701
+Version: 2024.10.20~b94f066e-r1
+Depends: libc, libnl-tiny1, libuci20250120, libubus20250102, libiwinfo-data
+Provides: libiwinfo
+License: GPL-2.0
+Section: libs
+ABIVersion: 20230701
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libiwinfo20230701_2024.10.20~b94f066e-r1_mipsel_24kc.ipk
+Size: 23818
+SHA256sum: 1afecde7c544ac3526ee659590d0786e9f4674689446970fff664005449a446f
+Description:  Wireless information library with simplified API for nl80211
+ and wext driver interfaces.
+
+Package: libjson-c5
+Version: 0.18-r1
+Depends: libc
+Provides: libjson-c
+License: MIT
+Section: libs
+URL: https://json-c.github.io/json-c/
+ABIVersion: 5
+CPE-ID: cpe:/a:json-c:json-c
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libjson-c5_0.18-r1_mipsel_24kc.ipk
+Size: 24655
+SHA256sum: 42e9ffed4daee59541936b1bef2f769e38fc546744c1fab1b7d1c0790d68e675
+Description:  This package contains a library for javascript object notation backends.
+
+Package: libjson-script20240329
+Version: 2025.07.23~49056d17-r1
+Depends: libc, libubox20240329
+Provides: libjson-script
+License: ISC
+Section: utils
+ABIVersion: 20240329
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libjson-script20240329_2025.07.23~49056d17-r1_mipsel_24kc.ipk
+Size: 5332
+SHA256sum: 3cfff81066f2dfa7c063acd729e4c92d102eae6251123854144674789c021d14
+Description:  Minimalistic JSON based scripting engine
+
+Package: libmbedtls21
+Version: 3.6.6-r2
+Depends: libc
+Provides: libmbedtls
+License: GPL-2.0-or-later
+Section: libs
+URL: https://www.trustedfirmware.org/projects/mbed-tls/
+ABIVersion: 21
+CPE-ID: cpe:/a:arm:mbed_tls
+Architecture: mipsel_24kc
+Installed-Size: 737280
+Filename: libmbedtls21_3.6.6-r2_mipsel_24kc.ipk
+Size: 298558
+SHA256sum: 7705d50268599ac50ca0c831fef00300cbff7702fed3df721962b9c43d968af2
+Description:  The aim of the mbedtls project is to provide a quality, open-source
+ cryptographic library written in C and targeted at embedded systems.
+ This package contains the mbedtls library.
+
+Package: libmnl0
+Version: 1.0.5-r1
+Depends: libc
+Provides: libmnl
+License: LGPL-2.1+
+Section: libs
+URL: http://www.netfilter.org/projects/libmnl/
+ABIVersion: 0
+CPE-ID: cpe:/a:netfilter:libmnl
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libmnl0_1.0.5-r1_mipsel_24kc.ipk
+Size: 6455
+SHA256sum: 58aabab00db220d250a5b3617f21799e7d7175c95893ede0dbb8912791e6ec31
+Description:  libmnl is a minimalistic user-space library oriented to Netlink developers.
+ There are a lot of common tasks in parsing, validating, constructing of
+ both the Netlink header and TLVs that are repetitive and easy to get wrong.
+ This library aims to provide simple helpers that allows you to re-use code
+ and to avoid re-inventing the wheel. The main features of this library are:
+ .
+ * Small: the shared library requires around 30KB for an x86-based computer.
+ .
+ * Simple: this library avoids complexity and elaborated abstractions that
+ tend to hide Netlink details.
+ .
+ * Easy to use: the library simplifies the work for Netlink-wise developers.
+ It provides functions to make socket handling, message building, validating,
+ parsing and sequence tracking, easier.
+ .
+ * Easy to re-use: you can use the library to build your own abstraction layer
+ on top of this library.
+ .
+ * Decoupling: the interdependency of the main bricks that compose the library
+ is reduced, i.e. the library provides many helpers, but the programmer is not
+ forced to use them.
+
+Package: libnftnl11
+Version: 1.2.8-r1
+Depends: libc, libmnl0
+Provides: libnftnl
+License: GPL-2.0-or-later
+Section: libs
+URL: http://www.netfilter.org/projects/libnftnl
+ABIVersion: 11
+CPE-ID: cpe:/a:netfilter:libnftnl
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: libnftnl11_1.2.8-r1_mipsel_24kc.ipk
+Size: 47408
+SHA256sum: ca199e6f164c5f8c265facd48f3179c7c1cf60466e456829c0a567dbffeef7e4
+Description:  libnftnl is a userspace library providing a low-level netlink
+ programming interface (API) to the in-kernel nf_tables subsystem.
+
+Package: libnl-tiny1
+Version: 2025.03.19~c0df580a-r1
+Depends: libc
+Provides: libnl-tiny
+License: LGPL-2.1
+Section: libs
+ABIVersion: 1
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libnl-tiny1_2025.03.19~c0df580a-r1_mipsel_24kc.ipk
+Size: 13043
+SHA256sum: c2452cee73cdc0da754ef8cf2f1f4b3c37485085b366f9c2584a2070bb22e016
+Description:  This package contains a stripped down version of libnl
+
+Package: libopenssl-conf
+Version: 3.0.21-r1
+Depends: libc, libopenssl3
+License: Apache-2.0
+Section: libs
+URL: https://www.openssl.org/
+CPE-ID: cpe:/a:openssl:openssl
+Architecture: mipsel_24kc
+Installed-Size: 20480
+Filename: libopenssl-conf_3.0.21-r1_mipsel_24kc.ipk
+Size: 6499
+SHA256sum: d1022ccf994327ef6af5912fee5b78a0aff1f71675d62864b2193c1dd3925920
+Description:  The OpenSSL Project is a collaborative effort to develop a robust,
+ commercial-grade, full-featured, and Open Source toolkit implementing the
+ Transport Layer Security (TLS) protocol as well as a full-strength
+ general-purpose cryptography library.
+ This package installs the OpenSSL configuration file /etc/ssl/openssl.cnf.
+
+Package: libopenssl-legacy
+Version: 3.0.21-r1
+Depends: libc, libopenssl3, libopenssl-conf
+License: Apache-2.0
+Section: libs
+URL: https://www.openssl.org/
+CPE-ID: cpe:/a:openssl:openssl
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: libopenssl-legacy_3.0.21-r1_mipsel_24kc.ipk
+Size: 27934
+SHA256sum: 3b9c5be27876924e770f5ac482be4508513aab6864207c8fbd81e6cdad5af6a7
+Description:  The OpenSSL legacy provider supplies OpenSSL implementations of algorithms that
+ have been deemed legacy. Such algorithms have commonly fallen out of use, have
+ been deemed insecure by the cryptography community, or something similar.  See
+ https://www.openssl.org/docs/man3.0/man7/OSSL_PROVIDER-legacy.html
+
+Package: libopenssl3
+Version: 3.0.21-r1
+Depends: libc, libatomic1
+Provides: libopenssl
+License: Apache-2.0
+Section: libs
+URL: https://www.openssl.org/
+ABIVersion: 3
+CPE-ID: cpe:/a:openssl:openssl
+Architecture: mipsel_24kc
+Installed-Size: 3717120
+Filename: libopenssl3_3.0.21-r1_mipsel_24kc.ipk
+Size: 1392998
+SHA256sum: 5afd491f73b0fff66d74efe415f39972e4752a008f4a6db79c7082220a6a1efa
+Description:  The OpenSSL Project is a collaborative effort to develop a robust,
+ commercial-grade, full-featured, and Open Source toolkit implementing the
+ Transport Layer Security (TLS) protocol as well as a full-strength
+ general-purpose cryptography library.
+ This package contains the OpenSSL shared libraries, needed by other programs.
+
+Package: libubox20240329
+Version: 2025.07.23~49056d17-r1
+Depends: libc
+Provides: libubox
+License: ISC
+Section: libs
+ABIVersion: 20240329
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libubox20240329_2025.07.23~49056d17-r1_mipsel_24kc.ipk
+Size: 25842
+SHA256sum: 599f4c67c6faa37d54533a79fc44b081d5a28d51fe58212bd9e31e94e47e091f
+Description:  Basic utility library
+
+Package: libubus20250102
+Version: 2025.10.17~60e04048-r1
+Depends: libc, libubox20240329
+Provides: libubus
+License: LGPL-2.1
+Section: libs
+ABIVersion: 20250102
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libubus20250102_2025.10.17~60e04048-r1_mipsel_24kc.ipk
+Size: 10775
+SHA256sum: f4c0de1fc27c39701f0942246c4dd91a1fe9de06c2f29d42519686e363a9db42
+Description:  OpenWrt RPC client library
+
+Package: libuci20250120
+Version: 2025.01.20~16ff0bad-r1
+Depends: libc, libubox20240329
+Provides: libuci
+License: LGPL-2.1
+Section: libs
+ABIVersion: 20250120
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libuci20250120_2025.01.20~16ff0bad-r1_mipsel_24kc.ipk
+Size: 15820
+SHA256sum: 6e1aaf9e88e6e607c327e1e0aa7f944f40ee6372bdb43382775540c6fb9c8e6d
+Description:  C library for the Unified Configuration Interface (UCI)
+
+Package: libuclient20201210
+Version: 2024.10.22~88ae8f20-r1
+Depends: libc, libubox20240329
+Provides: libuclient
+License: ISC
+Section: libs
+ABIVersion: 20201210
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libuclient20201210_2024.10.22~88ae8f20-r1_mipsel_24kc.ipk
+Size: 10172
+SHA256sum: b9846fb263234294e0a7dd0737e4332b8de267c40d3c22612bdafd8175dca0d2
+Description:  HTTP/1.1 client library
+
+Package: libucode20230711
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, libjson-c5
+Provides: libucode
+License: ISC
+Section: libs
+ABIVersion: 20230711
+Architecture: mipsel_24kc
+Installed-Size: 204800
+Filename: libucode20230711_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 70016
+SHA256sum: 8caa6351f7212fbd368d852b65d7b8c56a345c5c299dd1ea0c6ca37cfc838bf0
+Description:  The libucode package provides the shared runtime library for the ucode interpreter.
+
+Package: libudebug
+Version: 2025.08.24~edeb4d6d
+Depends: libc, libubox20240329, libubus20250102
+License: GPL-2.0
+Section: libs
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libudebug_2025.08.24~edeb4d6d_mipsel_24kc.ipk
+Size: 4501
+SHA256sum: 973bf9063b023132fdd4b72b8813fa555f267b76ea5c9f5bb0d057e062b3e9a9
+Description:  udebug client library
+
+Package: libustream-mbedtls20201210
+Version: 2024.07.28~99bd3d2b-r1
+Depends: libc, libubox20240329, libmbedtls21
+Conflicts: libustream-openssl, libustream-wolfssl
+Provides: libustream-mbedtls
+License: ISC
+Section: libs
+ABIVersion: 20201210
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libustream-mbedtls20201210_2024.07.28~99bd3d2b-r1_mipsel_24kc.ipk
+Size: 5872
+SHA256sum: b8d347171ff4517389b008b4ff45254c5ecdce31a9421496845f41909ca0f426
+Description:  ustream SSL Library (mbedtls)
+
+Package: libustream-openssl20201210
+Version: 2024.07.28~99bd3d2b-r1
+Depends: libc, libubox20240329, libopenssl3
+Provides: libustream-openssl
+License: ISC
+Section: libs
+ABIVersion: 20201210
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: libustream-openssl20201210_2024.07.28~99bd3d2b-r1_mipsel_24kc.ipk
+Size: 5656
+SHA256sum: b2c0786aa6af726d06a76a3d3f5fcdb6b823ea7f5a52c7c5ca62f67245c2e3bb
+Description:  ustream SSL Library (openssl)
+
+Package: logd
+Version: 2024.04.26~85f10530-r1
+Depends: libc, libubox20240329, libubus20250102, libblobmsg-json20240329, libudebug
+Alternatives: 200:/sbin/logread:/usr/libexec/logread-ubox
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: logd_2024.04.26~85f10530-r1_mipsel_24kc.ipk
+Size: 12562
+SHA256sum: 93bb7f7d7bbfb05fcc86f91e4b6a2c0a2a61fd006cb3bab962c5781573a62b78
+Description:  OpenWrt system log implementation
+
+Package: luci-app-homeproxy
+Version: 26.223.23928~edece28
+Depends: libc, sing-box, firewall4, kmod-nft-tproxy, ucode-mod-digest
+Section: luci
+URL: https://github.com/openwrt/luci
+Architecture: all
+Installed-Size: 1853440
+Filename: luci-app-homeproxy_26.223.23928~edece28_all.ipk
+Size: 574108
+SHA256sum: 159273eaa9a46e7089a49dd43eed9c123a5750450e33afee6b5b412e56565084
+Description:  The modern ImmortalWrt proxy platform for ARM64/AMD64
+
+Package: mt7601u-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 51200
+Filename: mt7601u-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 27207
+SHA256sum: b49a5c7697d7668a59339ff2a37e42003104deb2b45ac08b120cfbe4bbdffb66
+Description:  MediaTek MT7601U firmware
+
+Package: mwifiex-pcie-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 737280
+Filename: mwifiex-pcie-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 515587
+SHA256sum: 76d566c658cd4bb896e2c5e3750c2ddd9ccb2f0cb71733777cddb4a99c2949cf
+Description:  Marvell 8897 firmware
+
+Package: mwifiex-sdio-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1249280
+Filename: mwifiex-sdio-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 877104
+SHA256sum: 659fbe20dd9df707dc1eba62209a47dd3e9480b497391a847dadf68797c11468
+Description:  Marvell 8887/8997 firmware
+
+Package: mwl8k-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 296960
+Filename: mwl8k-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 193241
+SHA256sum: e03b2ec8024baf71e9d8f5d92c995652c13f21f8b0be21e529b6ab43e3dafcfc
+Description:  Marvell 8366/8687 firmware
+
+Package: netifd
+Version: 2025.05.23~7901e66c-r1
+Depends: libc, libuci20250120, libnl-tiny1, libubus20250102, ubus, ubusd, jshn, libubox20240329, libudebug, ucode, ucode-mod-fs
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 256000
+Filename: netifd_2025.05.23~7901e66c-r1_mipsel_24kc.ipk
+Size: 92664
+SHA256sum: 4146354fca27f50af2bd6ee9db1889d2e98a815bc4ccef059800cc2a8b07790d
+Description:  OpenWrt Network Interface Configuration Daemon
+
+Package: nftables-json
+Version: 1.1.1-r1
+Depends: libc, kmod-nft-core, libnftnl11, jansson4
+Provides: nftables
+License: GPL-2.0
+Section: net
+URL: http://netfilter.org/projects/nftables/
+Architecture: mipsel_24kc
+Installed-Size: 798720
+Filename: nftables-json_1.1.1-r1_mipsel_24kc.ipk
+Size: 286907
+SHA256sum: 60c604348f3c5c56de556e9d80794012cd15991b119d8cf90f1e7c1d5c7d4b96
+Description:  nftables userspace utility with JSON support
+
+Package: odhcp6c
+Version: 2024.09.25~b6ae9ffa-r2
+Depends: libc, libubox20240329
+License: GPL-2.0
+Section: net
+Architecture: mipsel_24kc
+Installed-Size: 92160
+Filename: odhcp6c_2024.09.25~b6ae9ffa-r2_mipsel_24kc.ipk
+Size: 25045
+SHA256sum: 8e20faad20b1604e0d20271a9567f6aa23ac5dcdd55ba702c78a34835bf6b7ab
+Description:  Embedded DHCPv6-client for OpenWrt
+
+Package: odhcpd-ipv6only
+Version: 2025.10.02~b14cf98c-r3
+Depends: libc, libjson-c5, libubox20240329, libuci20250120, libubus20250102, libnl-tiny1
+License: GPL-2.0
+Section: net
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: odhcpd-ipv6only_2025.10.02~b14cf98c-r3_mipsel_24kc.ipk
+Size: 48453
+SHA256sum: 37139fa92e17af6dc12fb14e0b21f6941c5bde7e7a8c23a761e9208df41ad186
+Description:  odhcpd is a daemon for serving and relaying IP management protocols to
+ configure clients and downstream routers. It tries to follow the RFC 6204
+ requirements for IPv6 home routers.
+ 
+ This is a variant providing server services for RA, stateless and stateful
+ DHCPv6,  prefix delegation and can be used to relay RA, DHCPv6 and NDP between
+ routed (non-bridged) interfaces in case no delegated prefixes are available.
+
+Package: openssl-util
+Version: 3.0.21-r1
+Depends: libc, libopenssl3, libopenssl-conf
+License: Apache-2.0
+Section: utils
+URL: https://www.openssl.org/
+CPE-ID: cpe:/a:openssl:openssl
+Architecture: mipsel_24kc
+Installed-Size: 757760
+Filename: openssl-util_3.0.21-r1_mipsel_24kc.ipk
+Size: 296601
+SHA256sum: f551dd6d0468d4ec429a1f305daf69a11d18d985af0fb232bff355d4f8c95503
+Description:  The OpenSSL Project is a collaborative effort to develop a robust,
+ commercial-grade, full-featured, and Open Source toolkit implementing the
+ Transport Layer Security (TLS) protocol as well as a full-strength
+ general-purpose cryptography library.
+ This package contains the OpenSSL command-line utility.
+
+Package: openwrt-keyring
+Version: 2024.11.01~fbae29d7-r2
+Depends: libc
+Provides: lede-keyring
+License: GPL-2.0
+Section: base
+URL: https://openwrt.org/docs/guide-user/security/signatures
+Architecture: mipsel_24kc
+Installed-Size: 10240
+Filename: openwrt-keyring_2024.11.01~fbae29d7-r2_mipsel_24kc.ipk
+Size: 1129
+SHA256sum: 35d603501eb5af01c57526d6cb8374365cda54d7024a8e98a301ed0c7b172c78
+Description:  The keyring of with the developer using and gpg public keys.
+
+Package: opkg
+Version: 2024.10.16~38eccbb1-r1
+Depends: libc, uclient-fetch, libpthread, libubox20240329
+License: GPL-2.0
+Section: base
+URL: https://git.openwrt.org/project/opkg-lede.git
+Essential: yes
+Architecture: mipsel_24kc
+Installed-Size: 153600
+Filename: opkg_2024.10.16~38eccbb1-r1_mipsel_24kc.ipk
+Size: 57864
+SHA256sum: 000cd7a531503d5b92415dffee36f3a60ee5d10f655620f3f035aee95f395d6a
+Description:  Lightweight package management system
+ opkg is the opkg Package Management System, for handling
+ installation and removal of packages on a system. It can
+ recursively follow dependencies and download all packages
+ necessary to install a particular package.
+ 
+ opkg knows how to install both .ipk and .deb packages.
+
+Package: ppp-mod-pppoe
+Version: 2.5.1-r1
+Depends: libc, kmod-pppoe
+License: BSD-4-Clause
+Section: net
+URL: https://ppp.samba.org/
+CPE-ID: cpe:/a:samba:ppp
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ppp-mod-pppoe_2.5.1-r1_mipsel_24kc.ipk
+Size: 12352
+SHA256sum: d70b784433949fb2916ee88fc7c496933e7aac5e4416c67574ea9e24a9d0fd07
+Description:  This package contains a PPPoE (PPP over Ethernet) plugin for ppp.
+
+Package: ppp
+Version: 2.5.1-r1
+Depends: libc, kmod-ppp
+License: BSD-4-Clause
+Section: net
+URL: https://ppp.samba.org/
+CPE-ID: cpe:/a:samba:ppp
+Architecture: mipsel_24kc
+Installed-Size: 307200
+Filename: ppp_2.5.1-r1_mipsel_24kc.ipk
+Size: 124647
+SHA256sum: 84f24debf5b9621a21d59ad5542a6b2e9e7a9c929830086d02a38d1851e013c6
+Description:  This package contains the PPP (Point-to-Point Protocol) daemon.
+
+Package: procd-seccomp
+Version: 2026.03.14~c59f2d80-r1
+Depends: libc, libubox20240329, libblobmsg-json20240329
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 204800
+Filename: procd-seccomp_2026.03.14~c59f2d80-r1_mipsel_24kc.ipk
+Size: 18260
+SHA256sum: fdb3f44fc0df9031a45b596798397978815e2b12c5a2e9423c30267bde2c561a
+Description:  OpenWrt process seccomp helper + utrace
+
+Package: procd-ujail
+Version: 2026.03.14~c59f2d80-r1
+Depends: libc, libubox20240329, libubus20250102, libuci20250120, libblobmsg-json20240329
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: procd-ujail_2026.03.14~c59f2d80-r1_mipsel_24kc.ipk
+Size: 40041
+SHA256sum: 2947a8c1b5b984fa27892b4b3d6c522ef965fca3026ddd6072c81200c52c0e53
+Description:  OpenWrt process jail helper
+
+Package: procd
+Version: 2026.03.14~c59f2d80-r1
+Depends: libc, ubusd, ubus, libjson-script20240329, ubox, libubox20240329, libudebug, libubus20250102, libblobmsg-json20240329, libjson-c5, jshn
+Conflicts: procd-selinux
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 501760
+Filename: procd_2026.03.14~c59f2d80-r1_mipsel_24kc.ipk
+Size: 57563
+SHA256sum: 53e6abaa8742b012cdaa4b54252927ce9b9c122605501a15c9a36d99334c2e6f
+Description:  OpenWrt system process manager
+
+Package: r8152-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 30720
+Filename: r8152-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 10924
+SHA256sum: b9d49e2df3a647a0f2a767d992d6b64e5b5d4b603c48f244d9f505f83586f790
+Description:  RealTek RTL8152 firmware
+
+Package: r8169-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 153600
+Filename: r8169-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 42323
+SHA256sum: b9f2ac3662d41d89c7307f32459c1afc37a68fb2f0eca4c457dc005b0ed8beb4
+Description:  RealTek RTL8169 firmware
+
+Package: rpcd-mod-file
+Version: 2025.09.01~bba95191-r2
+Depends: libc, libubus20250102, libubox20240329, rpcd
+License: ISC
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: rpcd-mod-file_2025.09.01~bba95191-r2_mipsel_24kc.ipk
+Size: 7910
+SHA256sum: 559c28aa38e2e214661c370375df73b82cb907a051c6f481a156af52596076e6
+Description:  Provides ubus calls for file and directory operations.
+
+Package: rpcd-mod-iwinfo
+Version: 2025.09.01~bba95191-r2
+Depends: libiwinfo (>=2023.01.21), libc, libubus20250102, libubox20240329, rpcd, libiwinfo20230701
+License: ISC
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: rpcd-mod-iwinfo_2025.09.01~bba95191-r2_mipsel_24kc.ipk
+Size: 7856
+SHA256sum: 0369da7c688f9d0ed02a25bc0df150bfc14985aefe7937db011b194bd1bbebf7
+Description:  Provides ubus calls for accessing iwinfo data.
+
+Package: rpcd-mod-ucode
+Version: 2025.09.01~bba95191-r2
+Depends: libc, libubus20250102, libubox20240329, rpcd, libucode20230711
+License: ISC
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: rpcd-mod-ucode_2025.09.01~bba95191-r2_mipsel_24kc.ipk
+Size: 8582
+SHA256sum: 807e7b4e44dc6206ead0d10f772bd8d0e432e20fccdc9e3a6036f4c8c7ec5c81
+Description:  Allows implementing plugins using ucode scripts.
+
+Package: rpcd
+Version: 2025.09.01~bba95191-r2
+Depends: libc, libubus20250102, libubox20240329, libuci20250120, libblobmsg-json20240329, libjson-c5
+License: ISC
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 81920
+Filename: rpcd_2025.09.01~bba95191-r2_mipsel_24kc.ipk
+Size: 24013
+SHA256sum: c8f83ca5cbcd0787f89192dcae93e44306738636e6ac6bd302e15067d915c805
+Description:  This package provides the UBUS RPC backend server to expose various
+ functionality to frontend programs via JSON-RPC.
+
+Package: rs9113-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 204800
+Filename: rs9113-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 85255
+SHA256sum: 79932e0ff0364aaaf1786560d8f154cc661a282ec7e410902fd45db9d0a079b8
+Description:  RedPine Signals rs9113 firmware
+
+Package: rt2800-pci-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 20480
+Filename: rt2800-pci-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 4724
+SHA256sum: 4046d487efa68328f67405f542653543037725232cd817ac422b2a92b4398b12
+Description:  Ralink RT28xx/3xxx PCI/SoC firmware
+
+Package: rt2800-usb-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 20480
+Filename: rt2800-usb-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 3673
+SHA256sum: ecd002f5901aa02e452637c8d5e59fe7062c456d21fc8f9cce9bf4600972cc42
+Description:  Ralink RT28xx/3xxx USB firmware
+
+Package: rt61-pci-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 30720
+Filename: rt61-pci-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 7306
+SHA256sum: 16691361e2b51512566db145ac3b845ff159b380fb057dc4d2224274ca69cad7
+Description:  Ralink RT2561 firmware
+
+Package: rt73-usb-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 10240
+Filename: rt73-usb-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 2075
+SHA256sum: cfb069f33834ac39aaa0c7544d3ec33bc139418a81f64df137c3323c5b2ae83a
+Description:  Ralink RT2573 firmware
+
+Package: rtl8192ce-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 61440
+Filename: rtl8192ce-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 21525
+SHA256sum: b25b7101c120d826a8187077a4f23e710ecc8c8a4b41d523c4b2d4329aef58ff
+Description:  RealTek RTL8192CE firmware
+
+Package: rtl8192cu-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: rtl8192cu-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 19521
+SHA256sum: 91269e7685d0367f7cca33adb3ca534bca36acf4743f6cf1b37184add70f67d0
+Description:  RealTek RTL8192CU firmware
+
+Package: rtl8192de-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 40960
+Filename: rtl8192de-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 14317
+SHA256sum: ec3fdb66346d41875c321df2c60c852db60a8f18a9bb44ea9be36079d69f694e
+Description:  RealTek RTL8192DE firmware
+
+Package: rtl8192du-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 40960
+Filename: rtl8192du-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 14547
+SHA256sum: 9ee965886dd8aa0b8e06ab9393688ed5bb76ed72c8ad8527af9fb32ab727b67d
+Description:  RealTek RTL8192DU firmware
+
+Package: rtl8192se-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 92160
+Filename: rtl8192se-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 37512
+SHA256sum: dddee8e4b2bfaac58b82cba17c3e16fcd557741c4c1e8bf44515edcffe7e5d11
+Description:  RealTek RTL8192SE firmware
+
+Package: rtl8723be-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: rtl8723be-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 36828
+SHA256sum: 0ae46bc12b36c95614596f445fddb3caa85600fa898fbe35a1d1a450984dd80a
+Description:  RealTek RTL8723BE firmware
+
+Package: rtl8723de-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 40960
+Filename: rtl8723de-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 19614
+SHA256sum: 73aeafad4082ceb8f6ae1e51d1392fe02feaa4dfb28a7b60cda41d9dd065bf62
+Description:  RealTek RTL8723DE firmware
+
+Package: rtl8812a-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 30720
+Filename: rtl8812a-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 18320
+SHA256sum: 11eefc2bac69bd2ba83bba1a7b9f3e08614ea834fad21ac8ebc5dd4bede5e278
+Description:  RealTek RTL8812AU firmware
+
+Package: rtl8821a-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 40960
+Filename: rtl8821a-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 21232
+SHA256sum: a51dbb058b59e5c57be41e7a81e6407b5d55fed92fb48fa8e7e7e51c1dcd3e9e
+Description:  RealTek RTL8821AU firmware
+
+Package: rtl8821ae-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 61440
+Filename: rtl8821ae-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 28657
+SHA256sum: 9937c66c6e8f693df2db077d7187083ff899fcda3d2166b62a078edee33a66e4
+Description:  RealTek RTL8821AE firmware
+
+Package: rtl8821ce-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: rtl8821ce-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 58058
+SHA256sum: c51030ba6bdccb28a28579a84bf85cbf6bd7b34219b2d113052878cadb79bbde
+Description:  RealTek RTL8821CE firmware
+
+Package: rtl8822be-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 163840
+Filename: rtl8822be-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 83002
+SHA256sum: a43ce1ac4ff6eca58f97a15565ba63e0cdef71ca3fad5ab268b0a76cbb9255d7
+Description:  RealTek RTL8822BE firmware
+
+Package: rtl8822ce-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 358400
+Filename: rtl8822ce-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 162639
+SHA256sum: 5036af41335355d94d07056a986759a1fb3e92724793865e229ceb19b3e9d03d
+Description:  RealTek RTL8822CE firmware
+
+Package: rtl8851be-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1167360
+Filename: rtl8851be-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 597738
+SHA256sum: ffb9a5b98b49b11eaaffad67ae97aaad193224d94e3d811050cafd3701c59e85
+Description:  RealTek RTL8851BE firmware
+
+Package: rtl8852ae-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1433600
+Filename: rtl8852ae-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 667297
+SHA256sum: 13ffc1be7a5c2432e470d58b4f3bb6b64ec7a432264acfce03fe707d6f4fa651
+Description:  RealTek RTL8852AE firmware
+
+Package: rtl8852be-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1249280
+Filename: rtl8852be-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 638828
+SHA256sum: 928ccba3184622af34219c8de1df2a4b8633a88bed463add8243af0474b59752
+Description:  RealTek RTL8852BE firmware
+
+Package: rtl8852ce-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1546240
+Filename: rtl8852ce-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 829670
+SHA256sum: 68fb04cdc00977fbbaffa7226d1191d0b4bf260bca4eae0250f7511711a4997b
+Description:  RealTek RTL8852CE firmware
+
+Package: rtl8922ae-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 1546240
+Filename: rtl8922ae-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 804636
+SHA256sum: 4af0636194ffee8a9a0f58da99d17a35f5c35a4ff595ea8944089491849f6bd0
+Description:  RealTek RTL8922AE firmware
+
+Package: ubox
+Version: 2024.04.26~85f10530-r1
+Depends: libc, libubox20240329, ubusd, ubus, libubus20250102, libuci20250120
+Alternatives: 100:/sbin/rmmod:/sbin/kmodloader, 100:/sbin/insmod:/sbin/kmodloader, 100:/sbin/lsmod:/sbin/kmodloader, 100:/sbin/modinfo:/sbin/kmodloader, 100:/sbin/modprobe:/sbin/kmodloader
+License: GPL-2.0
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 215040
+Filename: ubox_2024.04.26~85f10530-r1_mipsel_24kc.ipk
+Size: 16340
+SHA256sum: c774b26842e40b2c71f980e1458e54f8202b0c6d312584fe7d1be35c8a23778e
+Description:  OpenWrt system helper toolbox
+
+Package: ubus
+Version: 2025.10.17~60e04048-r1
+Depends: libc, libubus20250102, libblobmsg-json20240329, ubusd
+License: LGPL-2.1
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ubus_2025.10.17~60e04048-r1_mipsel_24kc.ipk
+Size: 6504
+SHA256sum: bddbaa55911434d38a1f43fbf312bbe813582c4b3069234de7486918c38543cb
+Description:  OpenWrt RPC client utility
+
+Package: ubusd
+Version: 2025.10.17~60e04048-r1
+Depends: libc, libubox20240329, libblobmsg-json20240329
+License: LGPL-2.1
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ubusd_2025.10.17~60e04048-r1_mipsel_24kc.ipk
+Size: 12787
+SHA256sum: 0a1b8475a1ed0817520b409d16930f81087b53ba5ac47957dd2bbfd1212a4218
+Description:  OpenWrt RPC daemon
+
+Package: uci
+Version: 2025.01.20~16ff0bad-r1
+Depends: libc, libuci20250120
+License: LGPL-2.1
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 81920
+Filename: uci_2025.01.20~16ff0bad-r1_mipsel_24kc.ipk
+Size: 7210
+SHA256sum: b5f855d09d5c0a44410151f7fe4dfc624444d380bf56c186ae6439838679212a
+Description:  Utility for the Unified Configuration Interface (UCI)
+
+Package: uclient-fetch
+Version: 2024.10.22~88ae8f20-r1
+Depends: libc, libuclient20201210
+Provides: wget
+Alternatives: 200:/usr/bin/wget:/bin/uclient-fetch
+License: ISC
+Section: net
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: uclient-fetch_2024.10.22~88ae8f20-r1_mipsel_24kc.ipk
+Size: 8218
+SHA256sum: b6edf7725acea7596bd23718e74c584a5827176b1a86c319b4f805b867785fd4
+Description:  Tiny wget replacement using libuclient
+
+Package: ucode-mod-digest
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-digest_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 16601
+SHA256sum: b470811bc32445e96bc22b78008f492c0bc1c7916cbda232e311a0c65a8fc8aa
+Description:  The digest module allows ucode scripts to use libmd digests.
+
+Package: ucode-mod-fs
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-fs_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 10073
+SHA256sum: 7643378795b017fa7978b0cdff8ef5f446481f9070f01bf431b2726e21a971f8
+Description:  The filesystem plugin module allows interaction with the local file system.
+
+Package: ucode-mod-math
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-math_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 3349
+SHA256sum: f4508039cf4cee3ebff09f45731c08a0f4d7c824df25ca6cb718365cd4acf5f6
+Description:  The math plugin provides access to various <math.h> procedures.
+
+Package: ucode-mod-nl80211
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode, libnl-tiny1, libubox20240329
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-nl80211_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 19864
+SHA256sum: 539277426bef31b93e3a2289a2d6d5ce86db6d2e6525ba5eb370e3d694ec3807
+Description:  The nl80211 plugin provides access to the Linux wireless 802.11 netlink API.
+
+Package: ucode-mod-rtnl
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode, libnl-tiny1, libubox20240329
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 143360
+Filename: ucode-mod-rtnl_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 24663
+SHA256sum: 896c965b602234790d862cfb0007d13a803f7cd107391b1effa139dcd22792db
+Description:  The rtnl plugin provides access to the Linux routing netlink API.
+
+Package: ucode-mod-ubus
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode, libubus20250102, libblobmsg-json20240329
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-ubus_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 15859
+SHA256sum: ad193972d685014126dbe9d12d78c06d0b1c38ddd056e076bb4bc1fc404ef0ef
+Description:  The ubus module allows ucode template scripts to enumerate and invoke ubus procedures.
+
+Package: ucode-mod-uci
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode, libuci20250120
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-uci_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 7569
+SHA256sum: 7e61e3581002b4c1d7f653450ad932a31b076039529cb57876909b0db9f5a2e2
+Description:  The uci module allows templates to read and modify uci configuration.
+
+Package: ucode-mod-uloop
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, ucode, libubox20240329
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode-mod-uloop_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 8587
+SHA256sum: 48c0739c81bb97ddd8b078b39aacef83d7d55c815800a7ddfd64f90f249fd027
+Description:  The uloop module allows ucode scripts to interact with OpenWrt uloop event loop implementation.
+
+Package: ucode
+Version: 2025.07.18~3f64c808-r1
+Depends: libc, libucode20230711
+License: ISC
+Section: lang
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: ucode_2025.07.18~3f64c808-r1_mipsel_24kc.ipk
+Size: 6783
+SHA256sum: b402a55049584af27c271c1a9c4b85b4176562b0ea91e3a9088eddd22d408951
+Description:  ucode is a tiny script interpreter featuring an ECMAScript oriented
+ script language and Jinja-inspired templating.
+
+Package: uhttpd-mod-ubus
+Version: 2025.07.06~7e64e8ba-r5
+Depends: libc, uhttpd, libubus20250102, libblobmsg-json20240329
+License: ISC
+Section: net
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: uhttpd-mod-ubus_2025.07.06~7e64e8ba-r5_mipsel_24kc.ipk
+Size: 8667
+SHA256sum: 4dfc0d470f8006aa49159d6205c6b6a706cf7833652df29533a74f327602740d
+Description:  The ubus plugin adds a HTTP/JSON RPC proxy for ubus and publishes the
+ session.* namespace and procedures.
+
+Package: uhttpd
+Version: 2025.07.06~7e64e8ba-r5
+Depends: libc, libubox20240329, libblobmsg-json20240329, libjson-script20240329, libjson-c5
+License: ISC
+Section: net
+Architecture: mipsel_24kc
+Installed-Size: 92160
+Filename: uhttpd_2025.07.06~7e64e8ba-r5_mipsel_24kc.ipk
+Size: 29265
+SHA256sum: e0cdfb173b66b76bec14e40d342b8b44176cb3608d018df72276922dc2a4b4b3
+Description:  uHTTPd is a tiny single threaded HTTP server with TLS, CGI and Lua
+ support. It is intended as a drop-in replacement for the Busybox
+ HTTP daemon.
+
+Package: urandom-seed
+Version: 3
+Depends: libc, getrandom
+License: GPL-2.0-only
+Section: base
+URL: https://openwrt.org/
+Architecture: mipsel_24kc
+Installed-Size: 10240
+Filename: urandom-seed_3_mipsel_24kc.ipk
+Size: 1570
+SHA256sum: 0da9865e44ba1e8d34bf5196f9adefe360505f7a50602b871a08c6bc69ad83d4
+Description:  /etc/urandom.seed handling for OpenWrt
+
+Package: urngd
+Version: 2023.11.01~44365eb1-r1
+Depends: libc, libubox20240329
+License: GPL-2.0 BSD-3-Clause
+Section: utils
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: urngd_2023.11.01~44365eb1-r1_mipsel_24kc.ipk
+Size: 9552
+SHA256sum: 1767cfc1b2f6855e0488fd9456c7c0c862ed90ed925eae7f31ea951e071bd986
+Description:  urngd is OpenWrt's micro non-physical true random number generator based on
+ timing jitter.
+ 
+ Using the Jitter RNG core, the rngd provides an entropy source that feeds into
+ the Linux /dev/random device if its entropy runs low. It updates the
+ /dev/random entropy estimator such that the newly provided entropy unblocks
+ /dev/random.
+ 
+ The seeding of /dev/random also ensures that /dev/urandom benefits from
+ entropy. Especially during boot time, when the entropy of Linux is low, the
+ Jitter RNGd provides a source of sufficient entropy.
+
+Package: usign
+Version: 2020.05.23~f1f65026-r1
+Depends: libc, libubox20240329
+License: ISC
+Section: base
+Architecture: mipsel_24kc
+Installed-Size: 71680
+Filename: usign_2020.05.23~f1f65026-r1_mipsel_24kc.ipk
+Size: 11908
+SHA256sum: d5de9b8147c1f5d754a15505d350f2c053dc3df2c40e34b525606d63488fa28b
+Description:  OpenWrt signature verification utility
+
+Package: wifi-scripts
+Version: 1.0-r1
+Depends: libc, netifd, ucode, ucode-mod-nl80211, ucode-mod-rtnl, ucode-mod-ubus, ucode-mod-uci
+License: GPL-2.0
+Section: utils
+Architecture: all
+Installed-Size: 133120
+Filename: wifi-scripts_1.0-r1_all.ipk
+Size: 30210
+SHA256sum: 460da828a520b6820ef6e8968fe7855dc799b6b0df89d074553fd11d7fb0d26b
+Description:  A set of scripts that handle setup and configuration of Wi-Fi devices.
+
+Package: wil6210-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 409600
+Filename: wil6210-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 255776
+SHA256sum: d45129978a387931185a01a658499b19c44c3e7d246df48e56ea44d4b226eda0
+Description:  wil6210 firmware
+
+Package: wireless-regdb
+Version: 2026.05.30-r1
+Depends: libc
+License: ISC
+Section: firmware
+URL: https://git.kernel.org/pub/scm/linux/kernel/git/wens/wireless-regdb.git/
+Architecture: all
+Installed-Size: 10240
+Filename: wireless-regdb_2026.05.30-r1_all.ipk
+Size: 3571
+SHA256sum: ceded1476214f1b7427bd635707da77f5377ee49e53dad3c61f46275fc3c3806
+Description:  Wireless Regulatory Database
+
+Package: wl12xx-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 2170880
+Filename: wl12xx-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 1175138
+SHA256sum: c2f4f6bd2bc1d53e92f062d09537bccc7b86127091b327a38f8c354f8fc6ef30
+Description:  TI WL12xx firmware
+
+Package: wl18xx-firmware
+Version: 20241110-r2
+Depends: libc
+Section: firmware
+URL: http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git
+Architecture: mipsel_24kc
+Installed-Size: 757760
+Filename: wl18xx-firmware_20241110-r2_mipsel_24kc.ipk
+Size: 343984
+SHA256sum: 052959cfab853429322c560731189e127d6efa1fb54e3042a056822d2efd6535
+Description:  TI WL18xx firmware
+
+Package: wpad-basic-mbedtls
+Version: 2024.09.15~5ace39b0-r3
+Depends: hostapd-common (=2024.09.15~5ace39b0-r3), libc, libnl-tiny1, hostapd-common, ucode, libucode20230711, ucode-mod-fs, ucode-mod-nl80211, ucode-mod-rtnl, ucode-mod-ubus, ucode-mod-uloop, libubus20250102, libblobmsg-json20240329, libudebug, libmbedtls21
+Conflicts: hostapd, hostapd-basic, hostapd-basic-openssl, hostapd-basic-wolfssl, hostapd-basic-mbedtls, hostapd-mini, hostapd-openssl, hostapd-wolfssl, hostapd-mbedtls, wpad, wpad-mesh-openssl, wpad-mesh-wolfssl, wpad-mesh-mbedtls, wpad-basic, wpad-basic-openssl, wpad-basic-wolfssl, wpad, wpad-mesh-openssl, wpad-mesh-wolfssl, wpad-mesh-mbedtls, wpad-basic, wpad-basic-openssl, wpad-basic-wolfssl
+Provides: hostapd, wpa-supplicant
+License: BSD-3-Clause
+Section: net
+URL: http://hostap.epitest.fi/
+CPE-ID: cpe:/a:w1.fi:hostapd
+Architecture: mipsel_24kc
+Installed-Size: 972800
+Filename: wpad-basic-mbedtls_2024.09.15~5ace39b0-r3_mipsel_24kc.ipk
+Size: 498822
+SHA256sum: fc2ae0ed86f9507cc0e4d9305728e3c264b801a33fb0f6d33b2adf80582e8431
+Description:  This package contains a basic IEEE 802.1x/WPA Authenticator and Supplicant with WPA-PSK, SAE (WPA3-Personal), 802.11r and 802.11w support.
+
+Package: wpad-openssl
+Version: 2024.09.15~5ace39b0-r3
+Depends: hostapd-common (=2024.09.15~5ace39b0-r3), libc, libnl-tiny1, hostapd-common, ucode, libucode20230711, ucode-mod-fs, ucode-mod-nl80211, ucode-mod-rtnl, ucode-mod-ubus, ucode-mod-uloop, libubus20250102, libblobmsg-json20240329, libudebug, libopenssl3, libopenssl-legacy
+Conflicts: hostapd, hostapd-basic, hostapd-basic-openssl, hostapd-basic-wolfssl, hostapd-basic-mbedtls, hostapd-mini, hostapd-openssl, hostapd-wolfssl, hostapd-mbedtls, wpad, wpad-mesh-openssl, wpad-mesh-wolfssl, wpad-mesh-mbedtls, wpad-basic, wpad-basic-openssl, wpad-basic-wolfssl, wpad-basic-mbedtls, wpad-mini, wpad, wpad-mesh-openssl, wpad-mesh-wolfssl, wpad-mesh-mbedtls, wpad-basic, wpad-basic-openssl, wpad-basic-wolfssl, wpad-basic-mbedtls, wpad-mini
+Provides: hostapd, wpa-supplicant
+License: BSD-3-Clause
+Section: net
+URL: http://hostap.epitest.fi/
+CPE-ID: cpe:/a:w1.fi:hostapd
+Architecture: mipsel_24kc
+Installed-Size: 1443840
+Filename: wpad-openssl_2024.09.15~5ace39b0-r3_mipsel_24kc.ipk
+Size: 763578
+SHA256sum: d7ff582d4e5e656da8a20d63a2f3114bed8dda3bef5dbbb57ac9b4076d916f8f
+Description:  This package contains a full featured IEEE 802.1x/WPA/EAP/RADIUS
+ Authenticator and Supplicant
+

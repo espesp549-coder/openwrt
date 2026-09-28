@@ -1,0 +1,36 @@
+Package: cgi-io
+Version: 2026.07.21~31cb3c89-r1
+Depends: libc, libubox20240329, libubus20250102
+Source: feeds/packages/net/cgi-io
+SourceName: cgi-io
+License: GPL-2.0-or-later
+Section: net
+SourceDateEpoch: 1784898749
+Maintainer: John Crispin <blogic@openwrt.org>
+Architecture: mipsel_24kc
+Installed-Size: 81920
+Filename: cgi-io_2026.07.21~31cb3c89-r1_mipsel_24kc.ipk
+Size: 8530
+SHA256sum: 1bc84ba84365a7eb606048747046c03c0d559ee09dafad4a524a22055203986b
+Description:  This package contains an cgi utility that is useful for up/downloading files
+
+Package: sing-box
+Version: 1.12.22-r1
+Depends: libc, ca-bundle, kmod-inet-diag, kmod-tun
+Source: feeds/packages/net/sing-box
+SourceName: sing-box
+License: GPL-3.0-or-later
+LicenseFiles: LICENSE
+Section: net
+Require-User: sing-box=5566:sing-box=5566
+SourceDateEpoch: 1784898749
+URL: https://sing-box.sagernet.org
+Maintainer: Van Waholtz <brvphoenix@gmail.com>
+Architecture: mipsel_24kc
+Installed-Size: 44769280
+Filename: sing-box_1.12.22-r1_mipsel_24kc.ipk
+Size: 13823009
+SHA256sum: 5dd16ae8c94c5e7299c41d1fa7f64fcd8fba2a306ef7de229e67818e0722dcfe
+Description:  Sing-box is a universal proxy platform which supports hysteria, SOCKS, Shadowsocks,
+ ShadowTLS, Tor, trojan, VLess, VMess, WireGuard and so on.
+

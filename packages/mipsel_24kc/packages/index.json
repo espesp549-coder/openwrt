@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "architecture": "mipsel_24kc",
+  "packages": {
+    "cgi-io": "2026.07.21~31cb3c89-r1",
+    "sing-box": "1.12.22-r1"
+  }
+}
