@@ -1,11 +1,11 @@
-name: Probe MX2000 on 24.10.8 (overlay + kernel patch test)
+name: Probe MX2000 v2 (all kernel patches + rejects)
 
 on:
   workflow_dispatch:
 
 env:
   TAG: v24.10.8
-  BASE: e3bec5692c50ff3b8001d4611c8eb57f54efb6b5   # آخر commit بالـ main قبل نسخ 6.12
+  BASE: e3bec5692c50ff3b8001d4611c8eb57f54efb6b5
 
 jobs:
   probe:
@@ -20,7 +20,7 @@ jobs:
             rsync unzip zlib1g-dev file wget curl xsltproc libelf-dev \
             libfuse-dev swig cmake zstd device-tree-compiler quilt
 
-      - name: Clone 24.10.8 and add main as remote
+      - name: Clone 24.10.8
         run: |
           mkdir -p out
           git clone --filter=blob:none https://github.com/openwrt/openwrt openwrt
@@ -28,17 +28,14 @@ jobs:
           git config user.email "ci@example.com"
           git config user.name "ci"
           git checkout -b mx2000 $TAG
-          git log -1 --oneline | tee ../out/00-source.txt
 
-      - name: Report files touched by the key commits
-        run: |
-          cd openwrt
-          for c in 34d9172655 ea83f7de2b 552056622d f76b846eea 398f4a9737 \
-                   4b6886d9fd 24db75d242 89dd393d8c abd0418684 \
-                   648d070c76 fe17cc1bfd 3b7a92754e; do
-            git show --stat --format='=== %h %s' $c -- >> ../out/01-key-commits-stat.txt
-          done
-          wc -l ../out/01-key-commits-stat.txt
+      - name: Restore host tools cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt/staging_dir/host
+            openwrt/build_dir/host
+          key: hosttools-${{ env.TAG }}-v1
 
       - name: Overlay qualcommax + firmware packages from main@BASE
         run: |
@@ -47,55 +44,86 @@ jobs:
             git rm -r -q --ignore-unmatch $d
             git checkout $BASE -- $d
           done
+          # main نقل هذا الخيار للـ generic config، بـ 24.10 لازم نرجعه يدوياً
+          echo "CONFIG_NET_SWITCHDEV=y" >> target/linux/qualcommax/config-6.6
+          git add -A
           git commit -q -m "overlay ipq50xx support from main@$BASE"
-          git diff --stat HEAD~1 | tail -n 5 | tee ../out/02-overlay-stat.txt
 
-      - name: Apply the generic / kernel-package parts of the key commits
+      - name: Apply generic / kernel-package parts of the key commits
         run: |
           cd openwrt
-          for c in f76b846eea 4b6886d9fd 24db75d242 89dd393d8c abd0418684 648d070c76 fe17cc1bfd; do
+          for c in f76b846eea 4b6886d9fd 24db75d242 89dd393d8c; do
             git format-patch -1 --stdout $c -- target/linux/generic package/kernel > /tmp/p.patch || true
             if [ -s /tmp/p.patch ]; then
-              if git am -3 /tmp/p.patch; then
-                echo "APPLIED $c" >> ../out/03-apply.txt
-              else
-                git am --abort || true
-                echo "FAILED  $c" >> ../out/03-apply.txt
-              fi
+              if git am -3 /tmp/p.patch; then echo "APPLIED $c" >> ../out/03-apply.txt
+              else git am --abort || true; echo "FAILED  $c" >> ../out/03-apply.txt; fi
             else
-              echo "NOOP    $c (nothing outside qualcommax)" >> ../out/03-apply.txt
+              echo "NOOP    $c" >> ../out/03-apply.txt
             fi
           done
           cat ../out/03-apply.txt
 
-      - name: Feeds and minimal config
+      - name: Minimal config
         run: |
           cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
           cat > .config <<'EOF'
           CONFIG_TARGET_qualcommax=y
           CONFIG_TARGET_qualcommax_ipq50xx=y
           CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_linksys_mx2000=y
           EOF
-          make defconfig 2>&1 | tee ../out/04-defconfig.txt
-          grep -E "linksys_mx2000|qualcommax_ipq50xx" .config | tee ../out/04-config-check.txt
+          make defconfig > ../out/04-defconfig.txt 2>&1
+          grep -E "linksys_mx2000" .config
 
       - name: Build host tools
         run: |
           cd openwrt
           make -j$(nproc) tools/install V=s > ../out/05-tools.log 2>&1 || (tail -n 60 ../out/05-tools.log; exit 1)
 
-      - name: Download kernel and apply patches (the real test)
+      - name: Save host tools cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/staging_dir/host
+            openwrt/build_dir/host
+          key: hosttools-${{ env.TAG }}-v1
+
+      - name: Kernel prepare (expected to stop at the first failing patch)
         run: |
           cd openwrt
           make -j$(nproc) target/linux/prepare V=s > ../out/06-kernel-prepare.log 2>&1 || true
-          tail -n 80 ../out/06-kernel-prepare.log
-          grep -n -E "Hunk #.*FAILED|can't find file|Patch failed|\*\*\*" ../out/06-kernel-prepare.log | head -n 80 > ../out/07-patch-errors.txt || true
+          tail -n 30 ../out/06-kernel-prepare.log
+
+      - name: Collect rejects and continue through the remaining patches
+        if: always()
+        run: |
+          cd openwrt
+          KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
+          echo "KDIR=$KDIR" | tee ../out/10-kdir.txt
+          mkdir -p ../out/rej
+          find "$KDIR" -name '*.rej' | while read f; do cp "$f" ../out/rej/$(basename "$f"); done
+          cp target/linux/qualcommax/patches-6.6/0113-*.patch ../out/ || true
+          sed -n 30,140p "$KDIR/drivers/remoteproc/qcom_q6v5_wcss.c" > ../out/11-wcss-context.txt || true
+
+          PDIR="$GITHUB_WORKSPACE/openwrt/target/linux/qualcommax/patches-6.6"
+          cd "$KDIR"
+          for p in $(ls "$PDIR"/*.patch | sort); do
+            name=$(basename "$p")
+            if [[ "$name" > "0113-zzz" ]]; then
+              if patch -p1 -N --no-backup-if-mismatch < "$p" > /tmp/pl.txt 2>&1; then
+                echo "OK   $name" >> "$GITHUB_WORKSPACE/out/12-remaining.txt"
+              else
+                echo "FAIL $name" >> "$GITHUB_WORKSPACE/out/12-remaining.txt"
+                head -n 15 /tmp/pl.txt >> "$GITHUB_WORKSPACE/out/12-remaining-errors.txt"
+              fi
+            fi
+          done
+          grep -c "^OK" "$GITHUB_WORKSPACE/out/12-remaining.txt" || true
+          grep "^FAIL" "$GITHUB_WORKSPACE/out/12-remaining.txt" || true
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: probe-mx2000
+          name: probe-mx2000-v2
           path: out/
