@@ -1,43 +1,70 @@
-name: Build Kernel
+name: Extract ipq50xx patches for MX2000
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/check-kernel-patches.yml'
-      - '.github/workflows/build.yml'
-      - '.github/workflows/kernel.yml'
-      - 'include/kernel*'
-      - 'package/kernel/**'
-      - 'target/linux/**'
-  push:
-    paths:
-      - '.github/workflows/check-kernel-patches.yml'
-      - '.github/workflows/build.yml'
-      - '.github/workflows/kernel.yml'
-      - 'include/kernel*'
-      - 'package/kernel/**'
-      - 'target/linux/**'
-    branches-ignore:
-      - master
   workflow_dispatch:
 
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  # آخر commit بعد ما نسخوا ملفات النواة من 6.6 الى 6.12 = e40daa5b...، ناخذ اللي قبله
+  KERNEL_SPLIT: e40daa5b9911920e77eeaed567e254b684706add
+  MX2000_COMMIT: 398f4a97378e2f645badc1aef3d0e9fd76f6665d
 
 jobs:
-  build-kernels:
-    name: Build all affected Kernels
-    permissions:
-      contents: read
-      packages: read
-      actions: write
-    secrets:
-      ccache_s3_endpoint: ${{ secrets.CCACHE_S3_ENDPOINT }}
-      ccache_s3_bucket: ${{ secrets.CCACHE_S3_BUCKET }}
-      ccache_s3_access_key: ${{ secrets.CCACHE_S3_ACCESS_KEY }}
-      ccache_s3_secret_key: ${{ secrets.CCACHE_S3_SECRET_KEY }}
-    uses: openwrt/actions-shared-workflows/.github/workflows/kernel.yml@main
+  extract:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Clone OpenWrt (full history, no blobs)
+        run: |
+          git clone --filter=blob:none https://github.com/openwrt/openwrt openwrt
+          cd openwrt
+          git fetch origin openwrt-24.10:refs/remotes/origin/openwrt-24.10
+
+      - name: Find base commit and check MX2000 is inside it
+        run: |
+          cd openwrt
+          BASE=$(git rev-parse ${KERNEL_SPLIT}^)
+          echo "BASE=$BASE" >> $GITHUB_ENV
+          FORK=$(git merge-base origin/openwrt-24.10 $BASE)
+          echo "FORK=$FORK" >> $GITHUB_ENV
+          echo "base (before 6.12 split): $BASE"
+          echo "fork point of 24.10:      $FORK"
+          if git merge-base --is-ancestor $MX2000_COMMIT $BASE; then
+            echo "OK: MX2000 commit is before the 6.12 split"
+          else
+            echo "WARNING: MX2000 commit is NOT before the split"
+          fi
+
+      - name: Extract commit list, patches and file lists
+        run: |
+          cd openwrt
+          mkdir -p ../out/patches
+          PATHS="target/linux/qualcommax package/firmware/ipq-wifi"
+
+          {
+            echo "BASE=$BASE"
+            echo "FORK=$FORK"
+            echo "--- commits touching qualcommax / ipq-wifi between fork and base ---"
+            git log --reverse --oneline $FORK..$BASE -- $PATHS
+          } > ../out/summary.txt
+
+          git log --reverse --oneline $FORK..$BASE -- target/linux/qualcommax/ipq50xx \
+            > ../out/ipq50xx-commits.txt
+
+          git format-patch -o ../out/patches $FORK..$BASE -- $PATHS
+
+          echo "--- 24.10 qualcommax ---"    > ../out/trees.txt
+          git ls-tree -r --name-only origin/openwrt-24.10 target/linux/qualcommax >> ../out/trees.txt
+          echo "--- main@BASE qualcommax ---" >> ../out/trees.txt
+          git ls-tree -r --name-only $BASE target/linux/qualcommax >> ../out/trees.txt
+
+          git show origin/openwrt-24.10:target/linux/qualcommax/Makefile > ../out/Makefile.24.10
+          git show $BASE:target/linux/qualcommax/Makefile                > ../out/Makefile.base
+          git diff --stat origin/openwrt-24.10 $BASE -- $PATHS           > ../out/diffstat.txt || true
+
+          echo "patch count: $(ls ../out/patches | wc -l)"
+          head -n 40 ../out/summary.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipq50xx-extract
+          path: out/
