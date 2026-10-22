@@ -1,4 +1,4 @@
-name: Probe MX2000 v2 (all kernel patches + rejects)
+name: Probe MX2000 v3 (fix 0113, inspect next failure)
 
 on:
   workflow_dispatch:
@@ -44,7 +44,6 @@ jobs:
             git rm -r -q --ignore-unmatch $d
             git checkout $BASE -- $d
           done
-          # main نقل هذا الخيار للـ generic config، بـ 24.10 لازم نرجعه يدوياً
           echo "CONFIG_NET_SWITCHDEV=y" >> target/linux/qualcommax/config-6.6
           git add -A
           git commit -q -m "overlay ipq50xx support from main@$BASE"
@@ -61,7 +60,15 @@ jobs:
               echo "NOOP    $c" >> ../out/03-apply.txt
             fi
           done
-          cat ../out/03-apply.txt
+
+      # نواة 6.6.144 فيها MAX_HALT_REG = 4 (مو 3 مثل 6.6.80)، فنعدل سطر الـcontext بالباتش
+      - name: Fix known patch conflicts for kernel 6.6.144
+        run: |
+          cd openwrt/target/linux/qualcommax/patches-6.6
+          sed -i -E 's/^( #define MAX_HALT_REG[[:space:]]+)3$/\14/' 0113-remoteproc-qcom-Add-secure-PIL-support.patch
+          grep -n "MAX_HALT_REG" 0113-remoteproc-qcom-Add-secure-PIL-support.patch | tee ../../../../../out/08-fix-check.txt
+          cd ../../../../..
+          cd openwrt && git add -A && git commit -q -m "fix 0113 context for 6.6.144"
 
       - name: Minimal config
         run: |
@@ -72,7 +79,6 @@ jobs:
           CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_linksys_mx2000=y
           EOF
           make defconfig > ../out/04-defconfig.txt 2>&1
-          grep -E "linksys_mx2000" .config
 
       - name: Build host tools
         run: |
@@ -88,28 +94,33 @@ jobs:
             openwrt/build_dir/host
           key: hosttools-${{ env.TAG }}-v1
 
-      - name: Kernel prepare (expected to stop at the first failing patch)
+      - name: Kernel prepare
         run: |
           cd openwrt
-          make -j$(nproc) target/linux/prepare V=s > ../out/06-kernel-prepare.log 2>&1 || true
-          tail -n 30 ../out/06-kernel-prepare.log
+          make -j$(nproc) target/linux/prepare V=s > ../out/06-kernel-prepare.log 2>&1 && echo "PREPARE_OK" > ../out/09-result.txt || echo "PREPARE_FAILED" > ../out/09-result.txt
+          cat ../out/09-result.txt
+          tail -n 25 ../out/06-kernel-prepare.log
 
-      - name: Collect rejects and continue through the remaining patches
+      - name: Inspect the failing patch and continue through the rest
         if: always()
         run: |
           cd openwrt
-          KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
-          echo "KDIR=$KDIR" | tee ../out/10-kdir.txt
-          mkdir -p ../out/rej
-          find "$KDIR" -name '*.rej' | while read f; do cp "$f" ../out/rej/$(basename "$f"); done
-          cp target/linux/qualcommax/patches-6.6/0113-*.patch ../out/ || true
-          sed -n 30,140p "$KDIR/drivers/remoteproc/qcom_q6v5_wcss.c" > ../out/11-wcss-context.txt || true
+          FAILED=$(grep -oE 'qualcommax/patches-6\.6/[^ !]+\.patch' ../out/06-kernel-prepare.log | tail -n1 | xargs -r basename)
+          echo "FAILED_PATCH=$FAILED" | tee ../out/10-failed-patch.txt
+          if [ -z "$FAILED" ]; then echo "no failing patch"; exit 0; fi
 
+          KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
           PDIR="$GITHUB_WORKSPACE/openwrt/target/linux/qualcommax/patches-6.6"
+          mkdir -p ../out/rej
+          cp "$PDIR/$FAILED" ../out/
+          find "$KDIR" -name '*.rej' | while read f; do cp "$f" ../out/rej/$(basename "$f"); done
+          # كل مراجع halt بالملف، تكفي لفهم الفرق مع النواة الأحدث
+          grep -n "halt\|HALT" "$KDIR/drivers/remoteproc/qcom_q6v5_wcss.c" > ../out/11-wcss-halt-lines.txt || true
+
           cd "$KDIR"
           for p in $(ls "$PDIR"/*.patch | sort); do
             name=$(basename "$p")
-            if [[ "$name" > "0113-zzz" ]]; then
+            if [[ "$name" > "$FAILED" ]]; then
               if patch -p1 -N --no-backup-if-mismatch < "$p" > /tmp/pl.txt 2>&1; then
                 echo "OK   $name" >> "$GITHUB_WORKSPACE/out/12-remaining.txt"
               else
@@ -118,12 +129,11 @@ jobs:
               fi
             fi
           done
-          grep -c "^OK" "$GITHUB_WORKSPACE/out/12-remaining.txt" || true
-          grep "^FAIL" "$GITHUB_WORKSPACE/out/12-remaining.txt" || true
+          grep "^FAIL" "$GITHUB_WORKSPACE/out/12-remaining.txt" || echo "no more failures"
 
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: probe-mx2000-v2
+          name: probe-mx2000-v3
           path: out/
