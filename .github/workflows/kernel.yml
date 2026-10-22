@@ -1,70 +1,101 @@
-name: Extract ipq50xx patches for MX2000
+name: Probe MX2000 on 24.10.8 (overlay + kernel patch test)
 
 on:
   workflow_dispatch:
 
 env:
-  # آخر commit بعد ما نسخوا ملفات النواة من 6.6 الى 6.12 = e40daa5b...، ناخذ اللي قبله
-  KERNEL_SPLIT: e40daa5b9911920e77eeaed567e254b684706add
-  MX2000_COMMIT: 398f4a97378e2f645badc1aef3d0e9fd76f6665d
+  TAG: v24.10.8
+  BASE: e3bec5692c50ff3b8001d4611c8eb57f54efb6b5   # آخر commit بالـ main قبل نسخ 6.12
 
 jobs:
-  extract:
+  probe:
     runs-on: ubuntu-22.04
     steps:
-      - name: Clone OpenWrt (full history, no blobs)
+      - name: Install build dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison gawk gettext git \
+            libncurses5-dev libssl-dev python3-distutils python3-setuptools \
+            rsync unzip zlib1g-dev file wget curl xsltproc libelf-dev \
+            libfuse-dev swig cmake zstd device-tree-compiler quilt
+
+      - name: Clone 24.10.8 and add main as remote
+        run: |
+          mkdir -p out
           git clone --filter=blob:none https://github.com/openwrt/openwrt openwrt
           cd openwrt
-          git fetch origin openwrt-24.10:refs/remotes/origin/openwrt-24.10
+          git config user.email "ci@example.com"
+          git config user.name "ci"
+          git checkout -b mx2000 $TAG
+          git log -1 --oneline | tee ../out/00-source.txt
 
-      - name: Find base commit and check MX2000 is inside it
+      - name: Report files touched by the key commits
         run: |
           cd openwrt
-          BASE=$(git rev-parse ${KERNEL_SPLIT}^)
-          echo "BASE=$BASE" >> $GITHUB_ENV
-          FORK=$(git merge-base origin/openwrt-24.10 $BASE)
-          echo "FORK=$FORK" >> $GITHUB_ENV
-          echo "base (before 6.12 split): $BASE"
-          echo "fork point of 24.10:      $FORK"
-          if git merge-base --is-ancestor $MX2000_COMMIT $BASE; then
-            echo "OK: MX2000 commit is before the 6.12 split"
-          else
-            echo "WARNING: MX2000 commit is NOT before the split"
-          fi
+          for c in 34d9172655 ea83f7de2b 552056622d f76b846eea 398f4a9737 \
+                   4b6886d9fd 24db75d242 89dd393d8c abd0418684 \
+                   648d070c76 fe17cc1bfd 3b7a92754e; do
+            git show --stat --format='=== %h %s' $c -- >> ../out/01-key-commits-stat.txt
+          done
+          wc -l ../out/01-key-commits-stat.txt
 
-      - name: Extract commit list, patches and file lists
+      - name: Overlay qualcommax + firmware packages from main@BASE
         run: |
           cd openwrt
-          mkdir -p ../out/patches
-          PATHS="target/linux/qualcommax package/firmware/ipq-wifi"
+          for d in target/linux/qualcommax package/firmware/ipq-wifi package/firmware/ath11k-firmware; do
+            git rm -r -q --ignore-unmatch $d
+            git checkout $BASE -- $d
+          done
+          git commit -q -m "overlay ipq50xx support from main@$BASE"
+          git diff --stat HEAD~1 | tail -n 5 | tee ../out/02-overlay-stat.txt
 
-          {
-            echo "BASE=$BASE"
-            echo "FORK=$FORK"
-            echo "--- commits touching qualcommax / ipq-wifi between fork and base ---"
-            git log --reverse --oneline $FORK..$BASE -- $PATHS
-          } > ../out/summary.txt
+      - name: Apply the generic / kernel-package parts of the key commits
+        run: |
+          cd openwrt
+          for c in f76b846eea 4b6886d9fd 24db75d242 89dd393d8c abd0418684 648d070c76 fe17cc1bfd; do
+            git format-patch -1 --stdout $c -- target/linux/generic package/kernel > /tmp/p.patch || true
+            if [ -s /tmp/p.patch ]; then
+              if git am -3 /tmp/p.patch; then
+                echo "APPLIED $c" >> ../out/03-apply.txt
+              else
+                git am --abort || true
+                echo "FAILED  $c" >> ../out/03-apply.txt
+              fi
+            else
+              echo "NOOP    $c (nothing outside qualcommax)" >> ../out/03-apply.txt
+            fi
+          done
+          cat ../out/03-apply.txt
 
-          git log --reverse --oneline $FORK..$BASE -- target/linux/qualcommax/ipq50xx \
-            > ../out/ipq50xx-commits.txt
+      - name: Feeds and minimal config
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cat > .config <<'EOF'
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq50xx=y
+          CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_linksys_mx2000=y
+          EOF
+          make defconfig 2>&1 | tee ../out/04-defconfig.txt
+          grep -E "linksys_mx2000|qualcommax_ipq50xx" .config | tee ../out/04-config-check.txt
 
-          git format-patch -o ../out/patches $FORK..$BASE -- $PATHS
+      - name: Build host tools
+        run: |
+          cd openwrt
+          make -j$(nproc) tools/install V=s > ../out/05-tools.log 2>&1 || (tail -n 60 ../out/05-tools.log; exit 1)
 
-          echo "--- 24.10 qualcommax ---"    > ../out/trees.txt
-          git ls-tree -r --name-only origin/openwrt-24.10 target/linux/qualcommax >> ../out/trees.txt
-          echo "--- main@BASE qualcommax ---" >> ../out/trees.txt
-          git ls-tree -r --name-only $BASE target/linux/qualcommax >> ../out/trees.txt
+      - name: Download kernel and apply patches (the real test)
+        run: |
+          cd openwrt
+          make -j$(nproc) target/linux/prepare V=s > ../out/06-kernel-prepare.log 2>&1 || true
+          tail -n 80 ../out/06-kernel-prepare.log
+          grep -n -E "Hunk #.*FAILED|can't find file|Patch failed|\*\*\*" ../out/06-kernel-prepare.log | head -n 80 > ../out/07-patch-errors.txt || true
 
-          git show origin/openwrt-24.10:target/linux/qualcommax/Makefile > ../out/Makefile.24.10
-          git show $BASE:target/linux/qualcommax/Makefile                > ../out/Makefile.base
-          git diff --stat origin/openwrt-24.10 $BASE -- $PATHS           > ../out/diffstat.txt || true
-
-          echo "patch count: $(ls ../out/patches | wc -l)"
-          head -n 40 ../out/summary.txt
-
-      - name: Upload
+      - name: Upload report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ipq50xx-extract
+          name: probe-mx2000
           path: out/
