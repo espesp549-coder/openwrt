@@ -1,487 +1,111 @@
-name: Build MX2000 24.10.8 (verified)
+name: Check MX2000 info
 
 on:
   workflow_dispatch:
 
 env:
-  TAG: v24.10.8
-  BASE: e3bec5692c50ff3b8001d4611c8eb57f54efb6b5   # آخر commit بالـ main قبل نسخ ملفات 6.12
+  OWRT_TAG: v24.10.8
+  PICKS: f76b846eea 4b6886d9fd 24db75d242 89dd393d8c
+  FIXED_PATCH: 0116-remoteproc-qcom-Update-regmap-offsets-for-halt-regis.patch
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 345
+  check:
+    runs-on: ubuntu-24.04
     steps:
-      # ------------------------------------------------------------------
-      - name: "0. Helper scripts + runner info"
-        run: |
-          mkdir -p out
-          cat > ci-lib.sh <<'LIB'
-          SUMMARY="$GITHUB_WORKSPACE/out/summary.md"
-          pass() { echo "- **PASS** $*" | tee -a "$SUMMARY"; }
-          warn() { echo "- **WARN** $*" | tee -a "$SUMMARY"; echo "::warning::$*"; }
-          fail() { echo "- **FAIL** $*" | tee -a "$SUMMARY"; echo "::error::$*"; exit 1; }
-          check() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$d"; else fail "$d"; fi; }
-          soft()  { local d="$1"; shift; if "$@" >/dev/null 2>&1; then pass "$d"; else warn "$d"; fi; }
-          LIB
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-          cat > stage.sh <<'STAGE'
-          #!/bin/bash
-          # usage: stage.sh NAME [make targets...]
-          name="$1"; shift
-          cd "$GITHUB_WORKSPACE/openwrt" || exit 1
-          log="$GITHUB_WORKSPACE/out/stage-$name.log"
-          echo "=== STAGE $name: make $*"; date
-          start=$(date +%s)
-          if make -j"$(nproc)" "$@" V=s > "$log" 2>&1; then
-            mins=$(( ($(date +%s) - start) / 60 ))
-            echo "STAGE $name OK in ${mins} min"
-            df -h / | tail -n 1
-            echo "- **STAGE $name** ok (${mins} min)" >> "$GITHUB_WORKSPACE/out/summary.md"
-          else
-            echo "::error::stage $name FAILED"
-            grep -n -E "Patch failed|Hunk #[0-9]+ FAILED|[Ee]rror:|Error [0-9]+|\*\*\*" "$log" | head -n 60
-            echo "----- retry single-threaded for a readable error (max 30 min) -----"
-            timeout 30m make -j1 "$@" V=s 2>&1 | tail -n 200 > "$GITHUB_WORKSPACE/out/stage-$name-retry-tail.txt"
-            tail -n 80 "$GITHUB_WORKSPACE/out/stage-$name-retry-tail.txt"
-            echo "- **FAIL** stage $name" >> "$GITHUB_WORKSPACE/out/summary.md"
-            exit 1
-          fi
-          STAGE
-          chmod +x stage.sh
-
-          echo "IMG=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
-          echo "runner image: ${ImageVersion:-unknown}"
-          nproc; free -h
-
-      - name: "1. Free disk space (and require enough)"
-        run: |
-          source ./ci-lib.sh
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-          sudo docker image prune -a -f || true
-          df -h /
-          AVAIL=$(df --output=avail -BG / | tail -n 1 | tr -dc '0-9')
-          if [ "$AVAIL" -ge 20 ]; then pass "disk free: ${AVAIL}G"; else fail "only ${AVAIL}G free on / (need 20G)"; fi
-
-      - name: "2. Install build dependencies"
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential clang flex bison gawk gettext git \
-            libncurses5-dev libssl-dev python3-distutils python3-setuptools \
-            rsync unzip zlib1g-dev file wget curl xsltproc libelf-dev \
-            libfuse-dev swig cmake zstd device-tree-compiler quilt
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev file wget
+          mkdir -p reports
 
-      # ------------------------------------------------------------------
-      - name: "3. Clone 24.10.8 and verify source"
+      - name: 1 - Clone and tree info
         run: |
-          source ./ci-lib.sh
-          git clone --filter=blob:none https://github.com/openwrt/openwrt openwrt
+          git clone --depth 1 --branch "$OWRT_TAG" https://github.com/openwrt/openwrt.git openwrt
           cd openwrt
-          git config user.email "ci@example.com"
-          git config user.name "ci"
-          git checkout -b mx2000 "$TAG"
-          check "tree is exactly tag $TAG" test "$(git rev-parse HEAD)" = "$(git rev-parse "$TAG^{commit}")"
-          check "BASE commit exists in main history" git cat-file -e "$BASE^{commit}"
-          FORK=$(git merge-base "$TAG" "$BASE")
-          echo "FORK=$FORK" >> "$GITHUB_ENV"
-          check "qualcommax uses kernel 6.6 on $TAG" grep -q 'KERNEL_PATCHVER:=6.6' target/linux/qualcommax/Makefile
-          check "qualcommax uses kernel 6.6 on BASE" sh -c "git show $BASE:target/linux/qualcommax/Makefile | grep -q 'KERNEL_PATCHVER:=6.6'"
+          git config user.name ci
+          git config user.email ci@example.com
           {
-            echo "tag: $TAG ($(git rev-parse HEAD))"
-            echo "base: $BASE"
-            echo "fork point: $FORK"
-            echo "kernel: $(grep 'LINUX_VERSION-6.6' include/kernel-6.6)"
-            echo "runner image: $IMG"
-            date -u
-          } | tee ../out/00-build-info.txt
+            echo "## Tree info"
+            git log -1 --format='tag commit: %H %s'
+            grep -E "KERNEL_PATCHVER|KERNEL_TESTING" target/linux/qualcommax/Makefile
+            grep -E "LINUX_VERSION-6.6" include/kernel-version.mk
+            echo "qualcommax patches-6.6 count: $(ls target/linux/qualcommax/patches-6.6 | wc -l)"
+            echo "MX2000 mentions in clean tree:"
+            grep -ril mx2000 target/linux/qualcommax || echo "none"
+          } | tee ../reports/01-tree.txt
 
-      - name: "4a. Restore host-tools + downloads cache"
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            openwrt/staging_dir/host
-            openwrt/build_dir/host
-            openwrt/dl
-          key: mx2000-host-${{ env.TAG }}-${{ env.IMG }}-v1
-
-      - name: "4b. Restore toolchain cache"
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            openwrt/staging_dir/toolchain-*
-            openwrt/build_dir/toolchain-*
-          key: mx2000-tc-${{ env.TAG }}-${{ env.IMG }}-v1
-
-      # ------------------------------------------------------------------
-      - name: "5. Overlay ipq50xx support from main and verify it"
+      - name: 2 - Inspect the picked commits
+        working-directory: openwrt
         run: |
-          source ./ci-lib.sh
-          cd openwrt
-          for d in target/linux/qualcommax package/firmware/ipq-wifi package/firmware/ath11k-firmware; do
-            git rm -r -q --ignore-unmatch "$d"
-            git checkout "$BASE" -- "$d"
-          done
-          # ملف uboot-envtools خارج مجلد qualcommax: بدونه fw_setenv ما يعرف أقسام الجهاز
-          git checkout "$BASE" -- package/boot/uboot-envtools/files/qualcommax_ipq50xx
-          # main نقل هذا الخيار للـ generic config؛ بـ 24.10 لازم نرجعه
-          echo "CONFIG_NET_SWITCHDEV=y" >> target/linux/qualcommax/config-6.6
+          git remote add up https://github.com/openwrt/openwrt.git
+          git fetch --filter=blob:none up main
+          for c in $PICKS; do
+            echo "=== $c"
+            git show --stat --format='%H%n%an %ad%n%s' "$c" | head -30
+            echo "contained in:"
+            git branch -r --contains "$c" | head -5
+          done 2>&1 | tee ../reports/02-picks.txt
 
-          Q=target/linux/qualcommax
-          check "ipq50xx target.mk present" test -f $Q/ipq50xx/target.mk
-          check "ipq50xx in SUBTARGETS" grep -qE '^SUBTARGETS:=.*ipq50xx' $Q/Makefile
-          check "kernel still 6.6 in overlaid Makefile" grep -q 'KERNEL_PATCHVER:=6.6' $Q/Makefile
-          check "MX2000 defined in ipq50xx.mk" grep -q 'linksys_mx2000' $Q/image/ipq50xx.mk
-          check "MX2000 dts present" test -f $Q/files/arch/arm64/boot/dts/qcom/ipq5018-mx2000.dts
-          check "ipq-wifi knows MX2000" grep -q 'linksys_mx2000' package/firmware/ipq-wifi/Makefile
-          check "ath11k-firmware has IPQ5018" grep -qi 'ipq5018' package/firmware/ath11k-firmware/Makefile
-          check "ath11k-firmware has QCN6122" grep -qi 'qcn6122' package/firmware/ath11k-firmware/Makefile
-          check "uboot-envtools file for ipq50xx present" test -s package/boot/uboot-envtools/files/qualcommax_ipq50xx
-          check "NET_SWITCHDEV set exactly once" test "$(grep -c '^CONFIG_NET_SWITCHDEV=y' $Q/config-6.6)" = 1
-          check "no NET_SWITCHDEV 'is not set' conflict" sh -c "! grep -q '^# CONFIG_NET_SWITCHDEV is not set' $Q/config-6.6"
-          soft "24.10 itself had NET_SWITCHDEV=y for qualcommax (we restored it)" sh -c "git show $TAG:$Q/config-6.6 | grep -qx CONFIG_NET_SWITCHDEV=y"
-
-          # الدوال اللي يستخدمها ملف uboot-envtools لازم تكون معرّفة بمكتبة 24.10
-          for fn in $(grep -oE 'ubootenv_[a-z_]+' package/boot/uboot-envtools/files/qualcommax_ipq50xx | sort -u); do
-            check "uboot-envtools lib defines $fn" grep -rqE "^${fn}\(\)" package/boot/uboot-envtools/files/
-          done
-          ls package/boot/uboot-envtools/files/ | tee ../out/05-uboot-envtools-files.txt
-          grep -n 'SUBTARGET\|BOARD' package/boot/uboot-envtools/Makefile | tee ../out/05-uboot-envtools-makefile-refs.txt || true
-
-          # سكربتات مساعدة تستدعيها ملفات image بالـ qualcommax لازم تكون موجودة
-          for s in $(grep -rhoE '\$\(TOPDIR\)/scripts/[A-Za-z0-9_.-]+' $Q/image/ | sort -u | sed 's#\$(TOPDIR)/##'); do
-            check "image helper $s exists" test -e "$s"
-          done
-
-          git add -A
-          git commit -q -m "overlay ipq50xx support from main@$BASE"
-
-      - name: "6. Apply the generic / kernel-package commits and verify"
+      - name: 3 - Cherry-pick
+        working-directory: openwrt
         run: |
-          source ./ci-lib.sh
-          cd openwrt
-          for c in f76b846eea 4b6886d9fd 24db75d242 89dd393d8c; do
-            git format-patch -1 --stdout "$c" -- target/linux/generic package/kernel > /tmp/p.patch || true
-            if [ -s /tmp/p.patch ]; then
-              if git am -3 /tmp/p.patch; then pass "applied $c"
-              else git am --abort || true; fail "git am failed for $c"; fi
-            else
-              echo "nothing outside qualcommax in $c"
-            fi
-          done
-          check "mac80211 QCN6122 patches present (>=6)" test "$(find package/kernel/mac80211/patches -name '*QCN6122*' | wc -l)" -ge 6
-          check "SNAND/QPIC backports present in generic" test "$(find target/linux/generic -iname '*qpic*' | wc -l)" -ge 1
+          for c in $PICKS; do
+            if git cherry-pick -x "$c"; then echo "APPLIED $c"; else echo "CONFLICT $c"; git status --short | head -20; git cherry-pick --abort; fi
+          done 2>&1 | tee ../reports/03-apply.txt
 
-          # تقرير: ملفات خارج qualcommax لمس بها commits الـ ipq50xx (للمراجعة اليدوية)
-          git log --format='== %h %s' --name-only -i -E \
-            --grep='ipq50xx|ipq5018|qcn6122|mx2000|mx5500|spnmx56|mr5500|snand|qpic' "$FORK..$BASE" \
-            | awk 'NF' | awk '/^== /{c=$0; next} {print c " :: " $0}' \
-            | grep -v -E ' :: (target/linux/qualcommax/|package/firmware/(ipq-wifi|ath11k-firmware)/)' \
-            > ../out/06-outside-files-audit.txt || true
-          N=$(wc -l < ../out/06-outside-files-audit.txt)
-          warn "outside-qualcommax audit: $N lines in 06-outside-files-audit.txt (review it)"
-
-      - name: "7. Fix kernel patches for 6.6.144 (with asserts)"
+      - name: 4 - Device definition check
+        working-directory: openwrt
         run: |
-          source ./ci-lib.sh
-          cd openwrt/target/linux/qualcommax/patches-6.6
-          P13=0113-remoteproc-qcom-Add-secure-PIL-support.patch
-          P16=0116-remoteproc-qcom-Update-regmap-offsets-for-halt-regis.patch
-          check "0113 exists" test -f "$P13"
-          check "0116 exists" test -f "$P16"
-          check "0113 has MAX_HALT_REG 3 context before fix" grep -qE '^ #define MAX_HALT_REG[[:space:]]+3$' "$P13"
-          sed -i -E 's/^( #define MAX_HALT_REG[[:space:]]+)3$/\14/' "$P13"
-          check "0113 fixed to MAX_HALT_REG 4" grep -qE '^ #define MAX_HALT_REG[[:space:]]+4$' "$P13"
-          python3 - "$P16" <<'PYFIX'
-          import re, sys
-          p = sys.argv[1]
-          s = open(p).read()
-          parts = re.split(r'(?m)^(?=@@ )', s)
-          hunks = parts[1:]
-          if len(hunks) != 6:
-              sys.exit("ERROR: 0116 has %d hunks, expected 6" % len(hunks))
-          drop = [h for h in hunks if h.startswith('@@ -86,7 ') or h.startswith('@@ -928,9 ')]
-          if len(drop) != 2:
-              sys.exit("ERROR: matched %d hunks to drop, expected 2" % len(drop))
-          keep = [h for h in hunks if h not in drop]
-          open(p, 'w').write(parts[0] + ''.join(keep))
-          PYFIX
-          check "0116 has 4 hunks left" test "$(grep -c '^@@' "$P16")" -eq 4
-          check "0116 no longer touches MAX_HALT_REG" sh -c "! grep -q 'MAX_HALT_REG' $P16"
-          cd "$GITHUB_WORKSPACE/openwrt" && git add -A && git commit -q -m "fix 0113/0116 for kernel 6.6.144"
+          {
+            echo "## Files mentioning mx2000"
+            grep -ril mx2000 target/linux/qualcommax || echo "none"
+            echo "## ipq50xx.mk device block"
+            grep -n -A12 -i "mx2000" target/linux/qualcommax/image/ipq50xx.mk || echo "no block"
+            echo "## DTS list ipq50xx"
+            ls target/linux/qualcommax/files/arch/arm64/boot/dts/qcom 2>/dev/null | grep -i -E "ipq5018|mx"
+            echo "## 02_network / board files"
+            grep -rn -i mx2000 target/linux/qualcommax/ipq50xx || echo "none"
+          } 2>&1 | tee ../reports/04-device.txt
 
-      # ------------------------------------------------------------------
-      - name: "8. Feeds"
+      - name: 5 - Config and tools
+        working-directory: openwrt
         run: |
-          source ./ci-lib.sh
-          cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          for d in feeds/*/; do
-            [ -d "$d/.git" ] && echo "$(basename "$d") $(git -C "$d" rev-parse HEAD)"
-          done > ../out/08-feeds-commits.txt
-          cat ../out/08-feeds-commits.txt
-          check "luci installed from feed" test -d package/feeds/luci/luci-base
+          printf '%s\n' CONFIG_TARGET_qualcommax=y CONFIG_TARGET_qualcommax_ipq50xx=y > .config
+          make defconfig 2>&1 | tail -20
+          grep -E "DEVICE_.*mx2000" .config || echo "NO mx2000 device in .config"
+          make -j$(nproc) tools/install > ../reports/05-tools.log 2>&1
+          tail -3 ../reports/05-tools.log
 
-      - name: "9. Config + verify device selection"
+      - name: 6 - Kernel prepare with ORIGINAL patches
+        working-directory: openwrt
+        continue-on-error: true
         run: |
-          source ./ci-lib.sh
-          cd openwrt
-          cat > .config <<'CFG'
-          CONFIG_TARGET_qualcommax=y
-          CONFIG_TARGET_qualcommax_ipq50xx=y
-          CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_linksys_mx2000=y
-          CONFIG_TARGET_ROOTFS_INITRAMFS=y
-          CONFIG_PACKAGE_luci=y
-          CFG
-          make defconfig > ../out/09-defconfig.txt 2>&1
-          check "target ipq50xx selected" grep -qx 'CONFIG_TARGET_qualcommax_ipq50xx=y' .config
-          check "device MX2000 selected" grep -qx 'CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_linksys_mx2000=y' .config
-          check "profile is MX2000" grep -qx 'CONFIG_TARGET_PROFILE="DEVICE_linksys_mx2000"' .config
-          check "ipq-wifi MX2000 package selected" grep -qx 'CONFIG_PACKAGE_ipq-wifi-linksys_mx2000=y' .config
-          check "luci selected" grep -qx 'CONFIG_PACKAGE_luci=y' .config
-          check "ath11k-ahb selected" grep -qx 'CONFIG_PACKAGE_kmod-ath11k-ahb=y' .config
-          check "uboot-envtools selected" grep -qx 'CONFIG_PACKAGE_uboot-envtools=y' .config
-          soft "initramfs image enabled" grep -qx 'CONFIG_TARGET_ROOTFS_INITRAMFS=y' .config
+          make -j$(nproc) target/linux/prepare V=s > ../reports/06-prepare-original.log 2>&1 \
+            && echo PREPARE_OK || echo PREPARE_FAILED
+          grep -n -E "FAILED|Patch failed|\.rej" ../reports/06-prepare-original.log | head -20
 
-      - name: "10. Host tools"
+      - name: 7 - Retry with FIXED 0116 patch
+        working-directory: openwrt
+        continue-on-error: true
         run: |
-          cd openwrt
-          make -j"$(nproc)" tools/install > ../out/10-tools.log 2>&1 || { tail -n 60 ../out/10-tools.log; exit 1; }
+          make target/linux/clean > /dev/null 2>&1 || true
+          cp "../fixes/$FIXED_PATCH" "target/linux/qualcommax/patches-6.6/$FIXED_PATCH"
+          make -j$(nproc) target/linux/prepare V=s > ../reports/07-prepare-fixed.log 2>&1 \
+            && echo PREPARE_OK || echo PREPARE_FAILED
+          grep -n -E "FAILED|Patch failed|\.rej" ../reports/07-prepare-fixed.log | head -20
 
-      - name: "10b. Save host-tools cache"
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            openwrt/staging_dir/host
-            openwrt/build_dir/host
-            openwrt/dl
-          key: mx2000-host-${{ env.TAG }}-${{ env.IMG }}-v1
-
-      # ------------------------------------------------------------------
-      - name: "11. Kernel patches + DTS compile + driver check (fast)"
-        run: |
-          source ./ci-lib.sh
-          cd openwrt
-          ../stage.sh kernel-prepare target/linux/prepare
-          cd "$GITHUB_WORKSPACE/openwrt"
-          KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
-          check "kernel dir found ($KDIR)" test -d "$KDIR"
-          DTS="$KDIR/arch/arm64/boot/dts/qcom/ipq5018-mx2000.dts"
-          check "MX2000 dts copied into kernel tree" test -f "$DTS"
-
-          cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
-            -I "$KDIR/arch/arm64/boot/dts" -I "$KDIR/arch/arm64/boot/dts/qcom" \
-            -I "$KDIR/include" -I "$KDIR/scripts/dtc/include-prefixes" \
-            "$DTS" -o /tmp/mx2000.pp.dts 2> ../out/11-cpp-errors.txt \
-            || { tail -n 30 ../out/11-cpp-errors.txt; fail "preprocessing MX2000 dts failed"; }
-          dtc -I dts -O dtb -o /tmp/mx2000.dtb \
-            -W no-unit_address_vs_reg -W no-simple_bus_reg -W no-unique_unit_address -W no-avoid_unnecessary_addr_size \
-            /tmp/mx2000.pp.dts 2> ../out/11-dtc-warnings.txt \
-            || { tail -n 40 ../out/11-dtc-warnings.txt; fail "dtc failed: MX2000 dts has errors (missing label/node?)"; }
-          pass "MX2000 dts compiles with dtc"
-          dtc -I dtb -O dts /tmp/mx2000.dtb > ../out/11-mx2000-decompiled.dts 2>/dev/null
-          check "dtb compatible = linksys,mx2000" grep -q 'linksys,mx2000' ../out/11-mx2000-decompiled.dts
-          soft "ath11k calibration variant present" grep -q 'calibration-variant' ../out/11-mx2000-decompiled.dts
-
-          # كل compatible بالـDTS لازم يكون له driver بالنواة (بعد تطبيق الباتشات)
-          grep -E '^[[:space:]]*compatible' ../out/11-mx2000-decompiled.dts | grep -oE '"[^"]+"' | sort -u > /tmp/compats.txt
-          grep -rhoF -f /tmp/compats.txt "$KDIR/drivers" "$KDIR/sound" "$KDIR/kernel" 2>/dev/null | sort -u > /tmp/found.txt
-          comm -23 /tmp/compats.txt /tmp/found.txt > ../out/11-compatibles-without-driver.txt
-          M=$(grep -vc -E '"linksys,|"qcom,ipq5018"$' ../out/11-compatibles-without-driver.txt || true)
-          if [ "$M" -eq 0 ]; then pass "every DTS compatible has a driver string in the kernel"
-          else warn "$M DTS compatibles have no driver string (see 11-compatibles-without-driver.txt)"; fi
-
-      # ------------------------------------------------------------------
-      # 6.6.144 (stable) أضاف استخدامين لـ props->qpic_v2 بملف qcom_nandc.c،
-      # بينما باتشات سلسلة SNAND غيّرت اسم الحقل بالـstruct. نكتشف الاسم الجديد من الـheader ونصلح.
-      - name: "11b. Fix QPIC field rename (stable 6.6.144 vs SNAND series)"
-        run: |
-          source ./ci-lib.sh
-          cd openwrt
-          KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
-          F="$KDIR/drivers/mtd/nand/raw/qcom_nandc.c"
-          check "qcom_nandc.c present" test -f "$F"
-          PH=$(grep -rlE '^struct qcom_nandc_props[[:space:]]*\{' "$KDIR/include" "$KDIR/drivers/mtd" "$KDIR/drivers/spi" 2>/dev/null | head -n1)
-          check "qcom_nandc_props definition found" test -n "$PH"
-          awk '/^struct qcom_nandc_props[[:space:]]*\{/{f=1; next} f && /^\};/{f=0} f' "$PH" > ../out/11b-props-struct.txt
-          cat ../out/11b-props-struct.txt
-          if grep -qE '\bqpic_v2\b' ../out/11b-props-struct.txt; then
-            pass "struct still has qpic_v2, nothing to fix"
-          else
-            NEW=$(grep -oE '\bqpic_[a-z0-9_]+' ../out/11b-props-struct.txt | sort -u)
-            check "exactly one qpic_* member in struct (got: $NEW)" test "$(echo "$NEW" | wc -w)" -eq 1
-            cp "$F" /tmp/qcom_nandc.c.orig
-            sed -i -E "s/(props->)qpic_v2\b/\1$NEW/g" "$F"
-            diff -u /tmp/qcom_nandc.c.orig "$F" > ../out/11b-qpic-fix.diff || true
-            check "qpic_v2 uses were rewritten" test -s ../out/11b-qpic-fix.diff
-            check "no leftover props->qpic_v2" sh -c "! grep -q 'props->qpic_v2' '$F'"
-            pass "renamed props->qpic_v2 to props->$NEW in qcom_nandc.c"
-          fi
-          grep -rn --include='*.c' --include='*.h' '\bqpic_v2\b' "$KDIR/drivers" "$KDIR/include" > ../out/11b-leftover-qpic_v2.txt || true
-          L=$(wc -l < ../out/11b-leftover-qpic_v2.txt)
-          if [ "$L" -eq 0 ]; then pass "no other qpic_v2 users left"; else warn "$L other qpic_v2 references (11b-leftover-qpic_v2.txt)"; fi
-
-      - name: "12. Toolchain"
-        timeout-minutes: 100
-        run: ./stage.sh toolchain toolchain/install
-
-      - name: "12b. Save toolchain cache"
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            openwrt/staging_dir/toolchain-*
-            openwrt/build_dir/toolchain-*
-          key: mx2000-tc-${{ env.TAG }}-${{ env.IMG }}-v1
-
-      - name: "13. Kernel compile + verify kernel config"
-        timeout-minutes: 90
-        run: |
-          source ./ci-lib.sh
-          ./stage.sh kernel target/linux/compile
-          cd "$GITHUB_WORKSPACE/openwrt"
-          KCFG=$(ls build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.*/.config | head -n1)
-          check "kernel .config found" test -f "$KCFG"
-          cp "$KCFG" ../out/13-kernel.config
-
-          verify_cfg() {   # $1 = file, $2 = label; returns number of mismatches
-            local f="$1" tag="$2" miss=0 l sym
-            while IFS= read -r l; do
-              case "$l" in
-                CONFIG_*=*)
-                  if ! grep -qxF "$l" "$KCFG"; then
-                    echo "$tag MISMATCH wanted [$l] got [$(grep -E "^(# )?${l%%=*}[= ]" "$KCFG" | head -n1)]"
-                    miss=$((miss + 1))
-                  fi ;;
-                "# CONFIG_"*" is not set")
-                  sym=${l#\# }; sym=${sym%% *}
-                  if grep -qE "^${sym}=[ym]$" "$KCFG"; then
-                    echo "$tag MISMATCH wanted [$l] got [$(grep -E "^${sym}=" "$KCFG")]"
-                    miss=$((miss + 1))
-                  fi ;;
-              esac
-            done < "$f"
-            return $miss
-          }
-          Q=target/linux/qualcommax
-          verify_cfg $Q/ipq50xx/config-default ipq50xx > ../out/13-cfg-ipq50xx.txt; N1=$?
-          cat ../out/13-cfg-ipq50xx.txt
-          if [ "$N1" -eq 0 ]; then pass "every symbol of ipq50xx/config-default is honoured by kernel 6.6.144"
-          else fail "$N1 ipq50xx config symbols were dropped/changed (see 13-cfg-ipq50xx.txt)"; fi
-          verify_cfg $Q/config-6.6 shared > ../out/13-cfg-shared.txt; N2=$?
-          if [ "$N2" -eq 0 ]; then pass "shared qualcommax config fully honoured"
-          else warn "$N2 shared config symbols differ (see 13-cfg-shared.txt; many belong to ipq807x/ipq60xx)"; fi
-          check "CONFIG_NET_SWITCHDEV=y in kernel" grep -qx 'CONFIG_NET_SWITCHDEV=y' "$KCFG"
-          check "CONFIG_ARCH_QCOM=y in kernel" grep -qx 'CONFIG_ARCH_QCOM=y' "$KCFG"
-
-      - name: "14. Wi-Fi stack (mac80211 QCN6122 patches, firmware, BDF) + verify"
-        timeout-minutes: 90
-        run: |
-          source ./ci-lib.sh
-          ./stage.sh wifi package/kernel/mac80211/compile package/firmware/ipq-wifi/compile package/firmware/ath11k-firmware/compile
-          cd "$GITHUB_WORKSPACE/openwrt"
-          KO=$(find build_dir -name 'ath11k_ahb.ko' | head -n1)
-          check "ath11k_ahb.ko was built" test -n "$KO"
-          check "ath11k_ahb.ko contains QCN6122 support" sh -c "strings -a '$KO' | grep -qi qcn6122"
-          check "ipq-wifi MX2000 package built" test -n "$(find bin -name 'ipq-wifi-linksys_mx2000_*.ipk' | head -n1)"
-          soft "ath11k firmware packages built" test -n "$(find bin -name 'ath11k-firmware-*.ipk' | head -n1)"
-
-      - name: "15. Full build"
-        timeout-minutes: 240
-        run: |
-          ./stage.sh full
-
-      # ------------------------------------------------------------------
-      - name: "16. Verify final images and packages"
-        run: |
-          source ./ci-lib.sh
-          cd openwrt
-          OUT=bin/targets/qualcommax/ipq50xx
-          ls -l "$OUT" > ../out/16-bin-ls.txt
-          FACT=$(ls "$OUT"/*linksys_mx2000*squashfs-factory* 2>/dev/null | head -n1)
-          SYSU=$(ls "$OUT"/*linksys_mx2000*squashfs-sysupgrade* 2>/dev/null | head -n1)
-          ITB=$(ls "$OUT"/*linksys_mx2000*initramfs* 2>/dev/null | head -n1)
-          check "factory image exists" test -n "$FACT"
-          check "sysupgrade image exists" test -n "$SYSU"
-          check "factory image > 5 MB" test "$(stat -c %s "$FACT")" -gt 5000000
-          check "sysupgrade image > 5 MB" test "$(stat -c %s "$SYSU")" -gt 5000000
-          soft "initramfs (RAM-boot) image exists" test -n "$ITB"
-          sha256sum "$OUT"/*linksys_mx2000* > ../out/16-sha256.txt
-          { echo "factory:   $FACT $(stat -c %s "$FACT")"; echo "sysupgrade:$SYSU $(stat -c %s "$SYSU")"; file "$FACT" "$SYSU"; } | tee ../out/16-image-info.txt
-          tar -tvf "$SYSU" > ../out/16-sysupgrade-listing.txt 2>&1 || true
-          [ -n "$ITB" ] && dtc -I dtb -O dts "$ITB" 2>/dev/null | grep -E 'description|compatible|type|arch' | head -n 40 > ../out/16-fit-info.txt
-
-          # DTB داخل الصورة
-          DTB=$(find build_dir -name 'image-ipq5018-mx2000.dtb' -o -name 'ipq5018-mx2000.dtb' | head -n1)
-          check "final DTB built" test -n "$DTB"
-          check "final DTB is for linksys,mx2000" sh -c "dtc -I dtb -O dts '$DTB' 2>/dev/null | grep -q 'linksys,mx2000'"
-
-          # الحزم داخل الصورة
-          MF=$(ls "$OUT"/*linksys_mx2000*.manifest 2>/dev/null | head -n1)
-          [ -z "$MF" ] && MF=$(ls "$OUT"/*.manifest | head -n1)
-          cp "$MF" ../out/16-manifest.txt
-          check "manifest: ipq-wifi-linksys_mx2000" grep -q '^ipq-wifi-linksys_mx2000 ' "$MF"
-          check "manifest: ath11k firmware" grep -q '^ath11k-firmware' "$MF"
-          soft "manifest: QCN6122 firmware" grep -qi '^ath11k-firmware-qcn6122' "$MF"
-          soft "manifest: IPQ5018 firmware" grep -qi '^ath11k-firmware-ipq5018' "$MF"
-          check "manifest: kmod-ath11k-ahb" grep -q '^kmod-ath11k-ahb ' "$MF"
-          check "manifest: uboot-envtools" grep -q '^uboot-envtools ' "$MF"
-          check "manifest: luci" grep -q '^luci ' "$MF"
-          check "manifest: wpad" grep -q '^wpad' "$MF"
-
-          IPK=$(find bin -name 'ipq-wifi-linksys_mx2000_*.ipk' | head -n1)
-          tar -xzOf "$IPK" ./data.tar.gz | tar -tzv > ../out/16-ipq-wifi-files.txt
-          check "ipq-wifi package ships files" test -s ../out/16-ipq-wifi-files.txt
-
-          # الأهم: uboot-envtools المبني يعرف MX2000 (يحدد أقسام الـU-Boot env)
-          IPK2=$(find bin -name 'uboot-envtools_*.ipk' | head -n1)
-          tar -xzOf "$IPK2" ./data.tar.gz | tar -xzO --wildcards '*uci-defaults/*' > ../out/16-uboot-envtools-uci.txt 2>/dev/null || true
-          check "built uboot-envtools knows linksys,mx2000" grep -q 'linksys,mx2000' ../out/16-uboot-envtools-uci.txt
-
-          # سكربتات الجهاز تذكر MX2000
-          B=target/linux/qualcommax/ipq50xx/base-files
-          check "02_network handles MX2000" grep -q 'linksys,mx2000' $B/etc/board.d/02_network
-          check "platform.sh (sysupgrade) handles MX2000" grep -q 'linksys,mx2000' $B/lib/upgrade/platform.sh
-          check "caldata hotplug handles MX2000" grep -q 'linksys,mx2000' $B/etc/hotplug.d/firmware/11-ath11k-caldata
-          soft "bootcount handles MX2000" grep -q 'linksys,mx2000' $B/etc/init.d/bootcount
-
-          # دوال sysupgrade غير معرّفة (فحص تقريبي)
-          PL=$B/lib/upgrade/platform.sh
-          for fn in $(grep -oE '\b[a-z][a-z0-9]*(_[a-z0-9]+)+\b' "$PL" | sort -u); do
-            grep -qE "\b${fn}=" "$PL" && continue
-            grep -qE "^[[:space:]]*(function[[:space:]]+)?${fn}[[:space:]]*\(\)" "$PL" && continue
-            grep -rqE "^[[:space:]]*(function[[:space:]]+)?${fn}[[:space:]]*\(\)" package/base-files target/linux/qualcommax target/linux/generic include scripts 2>/dev/null && continue
-            echo "$fn"
-          done > ../out/16-undefined-upgrade-functions.txt
-          U=$(wc -l < ../out/16-undefined-upgrade-functions.txt)
-          if [ "$U" -eq 0 ]; then pass "no undefined helper in sysupgrade platform.sh"
-          else warn "$U identifiers in platform.sh not found as functions/vars (16-undefined-upgrade-functions.txt)"; fi
-
-      # ------------------------------------------------------------------
-      - name: "Summary"
+      - name: 8 - Summary
         if: always()
         run: |
-          [ -f out/summary.md ] && cat out/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+          for f in reports/0[1-4]*.txt; do echo "### $f"; cat "$f"; done >> "$GITHUB_STEP_SUMMARY"
+          for f in reports/06*.log reports/07*.log; do echo "### $f (last 30)"; tail -30 "$f"; done >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "Compress logs"
-        if: always()
-        run: |
-          gzip -f out/stage-*.log out/10-tools.log 2>/dev/null || true
-          du -sh out
-
-      - name: "Upload logs and reports"
+      - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reports-mx2000-${{ github.run_number }}
-          path: out/
-
-      - name: "Upload firmware"
-        uses: actions/upload-artifact@v4
-        with:
-          name: OpenWrt-24.10.8-MX2000-${{ github.run_number }}
-          path: |
-            openwrt/bin/targets/qualcommax/ipq50xx/*linksys_mx2000*
-            openwrt/bin/targets/qualcommax/ipq50xx/sha256sums
-          if-no-files-found: error
-          
+          name: reports
+          path: reports/
