@@ -130,7 +130,11 @@ jobs:
             git checkout "$BASE" -- "$d"
           done
           # ملف uboot-envtools خارج مجلد qualcommax: بدونه fw_setenv ما يعرف أقسام الجهاز
-          git checkout "$BASE" -- package/boot/uboot-envtools/files/qualcommax_ipq50xx
+          # main نقل المجلد لاحقاً (package/boot/uboot-tools/uboot-envtools)؛ نبحث عن الملف بـ BASE ونحطه بمسار 24.10
+          SRC=$(git ls-tree -r --name-only "$BASE" -- package/boot | grep -E '/files/qualcommax_ipq50xx$' | head -n1)
+          check "qualcommax_ipq50xx found in BASE (got: $SRC)" test -n "$SRC"
+          mkdir -p package/boot/uboot-envtools/files
+          git show "$BASE:$SRC" > package/boot/uboot-envtools/files/qualcommax_ipq50xx
           # main نقل هذا الخيار للـ generic config؛ بـ 24.10 لازم نرجعه
           echo "CONFIG_NET_SWITCHDEV=y" >> target/linux/qualcommax/config-6.6
 
@@ -300,7 +304,7 @@ jobs:
           else warn "$M DTS compatibles have no driver string (see 11-compatibles-without-driver.txt)"; fi
 
       # ------------------------------------------------------------------
-      #  (stable) أضاف استخدامين لـ props->qpic_v2 بملف qcom_nandc.c،
+      # 6.6.144 (stable) أضاف استخدامين لـ props->qpic_v2 بملف qcom_nandc.c،
       # بينما باتشات سلسلة SNAND غيّرت اسم الحقل بالـstruct. نكتشف الاسم الجديد من الـheader ونصلح.
       - name: "11b. Fix QPIC field rename (stable 6.6.144 vs SNAND series)"
         run: |
