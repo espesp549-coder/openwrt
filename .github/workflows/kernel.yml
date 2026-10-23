@@ -299,6 +299,19 @@ jobs:
           cd "$GITHUB_WORKSPACE/openwrt"
           KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
           check "kernel dir found ($KDIR)" test -d "$KDIR"
+          # Compatibility fix: the QPIC backport uses qpic_version2 in the
+          # shared props struct, while two qcom_nandc.c checks still use qpic_v2.
+          NANDC="$KDIR/drivers/mtd/nand/raw/qcom_nandc.c"
+          check "qcom NAND driver source exists" test -f "$NANDC"
+          if grep -q 'qpic_v2' "$NANDC" && grep -q 'qpic_version2' "$NANDC"; then
+            sed -i 's/qpic_v2/qpic_version2/g' "$NANDC"
+            pass "fixed stale qpic_v2 references to qpic_version2 in prepared kernel source"
+          elif ! grep -q 'qpic_v2' "$NANDC"; then
+            pass "qcom NAND driver has no stale qpic_v2 references"
+          else
+            fail "qcom NAND source has qpic_v2 but no qpic_version2; inspect QPIC backport mismatch"
+          fi
+          check "no stale qpic_v2 references remain" sh -c "! grep -q 'qpic_v2' '$NANDC'"
           DTS="$KDIR/arch/arm64/boot/dts/qcom/ipq5018-mx2000.dts"
           check "MX2000 dts copied into kernel tree" test -f "$DTS"
 
