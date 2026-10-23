@@ -122,40 +122,8 @@ jobs:
             git rm -r -q --ignore-unmatch "$d"
             git checkout "$BASE" -- "$d"
           done
-          # The file moved in main from package/boot/uboot-envtools to
-          # package/boot/uboot-tools/uboot-envtools. Import it from BASE, then
-          # adapt the MX2000 stanza to the legacy 24.10 helper API.
-          UBOOTENV_SRC=package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
-          UBOOTENV_DST=package/boot/uboot-envtools/files/qualcommax_ipq50xx
-          if git cat-file -e "$BASE:$UBOOTENV_SRC" 2>/dev/null; then
-            git show "$BASE:$UBOOTENV_SRC" > /tmp/qualcommax_ipq50xx.main
-          elif git cat-file -e "$BASE:package/boot/uboot-envtools/files/qualcommax_ipq50xx" 2>/dev/null; then
-            git show "$BASE:package/boot/uboot-envtools/files/qualcommax_ipq50xx" > /tmp/qualcommax_ipq50xx.main
-          else
-            echo "ERROR: qualcommax_ipq50xx not found in either known BASE path" >&2
-            git ls-tree -r --name-only "$BASE" | grep 'uboot-envtools/files/qualcommax_ipq50xx' || true
-            exit 1
-          fi
-          mkdir -p "$(dirname "$UBOOTENV_DST")"
-          # Keep only the board-specific env stanza from main and convert its
-          # modern helper call to the API used by the 24.10 uboot-envtools.
-          python3 - "$UBOOTENV_DST" /tmp/qualcommax_ipq50xx.main <<'PYFIX'
-          import pathlib, re, sys
-          dst, src = map(pathlib.Path, sys.argv[1:])
-          text = src.read_text()
-          if 'linksys,mx2000' not in text:
-              raise SystemExit('ERROR: source uboot-envtools file does not mention linksys,mx2000')
-          # In the modern file this board is grouped with Linksys siblings and
-          # uses ubootenv_add_mtd; 24.10 uses find_mtd_index + ubootenv_add_uci_config.
-          text = re.sub(
-              r'(?m)^\s*ubootenv_add_mtd "u_env" "0x0" "0x40000" "0x20000"\s*$',
-              '    idx="$(find_mtd_index u_env)"\n'
-              '    [ -n "$idx" ] && ubootenv_add_uci_config "/dev/mtd$idx" "0x0" "0x40000" "0x20000"',
-              text)
-          if 'ubootenv_add_mtd "u_env"' in text:
-              raise SystemExit('ERROR: could not adapt modern ubootenv_add_mtd call')
-          dst.write_text(text)
-          PYFIX
+          # ملف uboot-envtools خارج مجلد qualcommax: بدونه fw_setenv ما يعرف أقسام الجهاز
+          git checkout "$BASE" -- package/boot/uboot-envtools/files/qualcommax_ipq50xx
           # main نقل هذا الخيار للـ generic config؛ بـ 24.10 لازم نرجعه
           echo "CONFIG_NET_SWITCHDEV=y" >> target/linux/qualcommax/config-6.6
 
@@ -299,19 +267,6 @@ jobs:
           cd "$GITHUB_WORKSPACE/openwrt"
           KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
           check "kernel dir found ($KDIR)" test -d "$KDIR"
-          # Compatibility fix: the QPIC backport uses qpic_version2 in the
-          # shared props struct, while two qcom_nandc.c checks still use qpic_v2.
-          NANDC="$KDIR/drivers/mtd/nand/raw/qcom_nandc.c"
-          check "qcom NAND driver source exists" test -f "$NANDC"
-          if grep -q 'qpic_v2' "$NANDC" && grep -q 'qpic_version2' "$NANDC"; then
-            sed -i 's/qpic_v2/qpic_version2/g' "$NANDC"
-            pass "fixed stale qpic_v2 references to qpic_version2 in prepared kernel source"
-          elif ! grep -q 'qpic_v2' "$NANDC"; then
-            pass "qcom NAND driver has no stale qpic_v2 references"
-          else
-            fail "qcom NAND source has qpic_v2 but no qpic_version2; inspect QPIC backport mismatch"
-          fi
-          check "no stale qpic_v2 references remain" sh -c "! grep -q 'qpic_v2' '$NANDC'"
           DTS="$KDIR/arch/arm64/boot/dts/qcom/ipq5018-mx2000.dts"
           check "MX2000 dts copied into kernel tree" test -f "$DTS"
 
@@ -338,25 +293,38 @@ jobs:
           else warn "$M DTS compatibles have no driver string (see 11-compatibles-without-driver.txt)"; fi
 
       # ------------------------------------------------------------------
+      # 6.6.144 (stable) أضاف استخدامين لـ props->qpic_v2 بملف qcom_nandc.c،
+      # بينما باتشات سلسلة SNAND غيّرت اسم الحقل بالـstruct. نكتشف الاسم الجديد من الـheader ونصلح.
+      - name: "11b. Fix QPIC field rename (stable 6.6.144 vs SNAND series)"
+        run: |
+          source ./ci-lib.sh
+          cd openwrt
+          KDIR=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
+          F="$KDIR/drivers/mtd/nand/raw/qcom_nandc.c"
+          check "qcom_nandc.c present" test -f "$F"
+          PH=$(grep -rlE '^struct qcom_nandc_props[[:space:]]*\{' "$KDIR/include" "$KDIR/drivers/mtd" "$KDIR/drivers/spi" 2>/dev/null | head -n1)
+          check "qcom_nandc_props definition found" test -n "$PH"
+          awk '/^struct qcom_nandc_props[[:space:]]*\{/{f=1; next} f && /^\};/{f=0} f' "$PH" > ../out/11b-props-struct.txt
+          cat ../out/11b-props-struct.txt
+          if grep -qE '\bqpic_v2\b' ../out/11b-props-struct.txt; then
+            pass "struct still has qpic_v2, nothing to fix"
+          else
+            NEW=$(grep -oE '\bqpic_[a-z0-9_]+' ../out/11b-props-struct.txt | sort -u)
+            check "exactly one qpic_* member in struct (got: $NEW)" test "$(echo "$NEW" | wc -w)" -eq 1
+            cp "$F" /tmp/qcom_nandc.c.orig
+            sed -i -E "s/(props->)qpic_v2\b/\1$NEW/g" "$F"
+            diff -u /tmp/qcom_nandc.c.orig "$F" > ../out/11b-qpic-fix.diff || true
+            check "qpic_v2 uses were rewritten" test -s ../out/11b-qpic-fix.diff
+            check "no leftover props->qpic_v2" sh -c "! grep -q 'props->qpic_v2' '$F'"
+            pass "renamed props->qpic_v2 to props->$NEW in qcom_nandc.c"
+          fi
+          grep -rn --include='*.c' --include='*.h' '\bqpic_v2\b' "$KDIR/drivers" "$KDIR/include" > ../out/11b-leftover-qpic_v2.txt || true
+          L=$(wc -l < ../out/11b-leftover-qpic_v2.txt)
+          if [ "$L" -eq 0 ]; then pass "no other qpic_v2 users left"; else warn "$L other qpic_v2 references (11b-leftover-qpic_v2.txt)"; fi
+
       - name: "12. Toolchain"
         timeout-minutes: 100
-        run: |
-          # Work around binutils 2.42 readelf.c using off64_t/fseeko64
-          # while the musl headers hide the large-file API without this feature macro.
-          cd openwrt
-          make toolchain/binutils/prepare V=s > ../out/12-binutils-prepare.log 2>&1 || { tail -n 80 ../out/12-binutils-prepare.log; exit 1; }
-          READelf=$(find build_dir/toolchain-*/binutils-2.42/binutils -maxdepth 1 -name readelf.c -print -quit)
-          if [ -z "$READelf" ] || [ ! -f "$READelf" ]; then
-            echo "ERROR: could not find prepared binutils 2.42 readelf.c" >&2
-            find build_dir/toolchain-* -path '*/binutils-2.42/binutils/readelf.c' -print || true
-            exit 1
-          fi
-          if ! grep -q '^#define _LARGEFILE64_SOURCE' "$READelf"; then
-            sed -i '1i#define _LARGEFILE64_SOURCE 1' "$READelf"
-          fi
-          grep -n '_LARGEFILE64_SOURCE' "$READelf"
-          cd "$GITHUB_WORKSPACE"
-          ./stage.sh toolchain toolchain/install
+        run: ./stage.sh toolchain toolchain/install
 
       - name: "12b. Save toolchain cache"
         uses: actions/cache/save@v4
