@@ -340,7 +340,23 @@ jobs:
       # ------------------------------------------------------------------
       - name: "12. Toolchain"
         timeout-minutes: 100
-        run: ./stage.sh toolchain toolchain/install
+        run: |
+          # Work around binutils 2.42 readelf.c using off64_t/fseeko64
+          # while the musl headers hide the large-file API without this feature macro.
+          cd openwrt
+          make toolchain/binutils/prepare V=s > ../out/12-binutils-prepare.log 2>&1 || { tail -n 80 ../out/12-binutils-prepare.log; exit 1; }
+          READelf=$(find build_dir/toolchain-*/binutils-2.42/binutils -maxdepth 1 -name readelf.c -print -quit)
+          if [ -z "$READelf" ] || [ ! -f "$READelf" ]; then
+            echo "ERROR: could not find prepared binutils 2.42 readelf.c" >&2
+            find build_dir/toolchain-* -path '*/binutils-2.42/binutils/readelf.c' -print || true
+            exit 1
+          fi
+          if ! grep -q '^#define _LARGEFILE64_SOURCE' "$READelf"; then
+            sed -i '1i#define _LARGEFILE64_SOURCE 1' "$READelf"
+          fi
+          grep -n '_LARGEFILE64_SOURCE' "$READelf"
+          cd "$GITHUB_WORKSPACE"
+          ./stage.sh toolchain toolchain/install
 
       - name: "12b. Save toolchain cache"
         uses: actions/cache/save@v4
