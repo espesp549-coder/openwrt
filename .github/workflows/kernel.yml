@@ -184,6 +184,38 @@ jobs:
           N=$(wc -l < ../out/06-outside-files-audit.txt)
           warn "outside-qualcommax audit: $N lines in 06-outside-files-audit.txt (review it)"
 
+      - name: "6b. Make ath11k m3-dump patch self-contained (addr undeclared on 24.10)"
+        run: |
+          source ./ci-lib.sh
+          cd openwrt
+          python3 - 'package/kernel/mac80211/patches/ath11k/931-*m3-dump*.patch' <<'PYM3'
+          import re, sys, glob
+          fs = glob.glob(sys.argv[1])
+          if len(fs) != 1: sys.exit("ERROR: expected exactly one m3-dump patch, got %s" % fs)
+          p = fs[0]; L = open(p).read().split("\n")
+          if any("m3_dump_addr" in l for l in L): print("already fixed"); sys.exit(0)
+          ci = next((i for i,l in enumerate(L) if re.match(r'^\+\s*case M3_DUMP_REGION_TYPE:\s*$', l)), None)
+          if ci is None: sys.exit("ERROR: case M3_DUMP_REGION_TYPE not found")
+          bi = next((i for i in range(ci+1, len(L)) if re.match(r'^\+\s*break;\s*$', L[i]) and not L[i+1].startswith('+')), None)
+          if bi is None: sys.exit("ERROR: closing break not found")
+          ind = re.match(r'^\+(\s*)', L[ci]).group(1)
+          for i in range(ci+1, bi+1):
+              L[i] = re.sub(r'(?<![-\w])addr\b', 'm3_dump_addr', L[i])
+          L.insert(bi+1, "+" + ind + "}")
+          L[ci] = "+" + ind + "case M3_DUMP_REGION_TYPE: {"
+          L.insert(ci+1, "+" + ind + "\tu32 m3_dump_addr;")
+          hh = [i for i,l in enumerate(L) if l.startswith("@@ ")]
+          if len(hh) != 1: sys.exit("ERROR: expected 1 hunk, got %d" % len(hh))
+          m = re.match(r'^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)$', L[hh[0]])
+          L[hh[0]] = "@@ -%s,%s +%s,%d @@%s" % (m.group(1), m.group(2), m.group(3), int(m.group(4)) + 2, m.group(5))
+          s = "\n".join(L); open(p, "w").write(s)
+          assert s.count("m3_dump_addr") == 3, s.count("m3_dump_addr")
+          assert '"qcom,m3-dump-addr"' in s
+          print("fixed", p)
+          PYM3
+          check "931 patch no longer uses undeclared addr" sh -c "! grep -qE '&addr\)' package/kernel/mac80211/patches/ath11k/931-*m3-dump*.patch"
+          git add -A && git commit -q -m "fix 931 m3-dump patch: declare its own variable"
+
       - name: "7. Fix kernel patches for 6.6.144 (with asserts)"
         run: |
           source ./ci-lib.sh
