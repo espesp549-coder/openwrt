@@ -112,14 +112,6 @@ jobs:
             openwrt/dl
           key: mx2000-host-${{ env.TAG }}-${{ env.IMG }}-v2
 
-      - name: "4b. Restore toolchain cache"
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            openwrt/staging_dir/toolchain-*
-            openwrt/build_dir/toolchain-*
-          key: mx2000-tc-${{ env.TAG }}-${{ env.IMG }}-v2
-
       # ------------------------------------------------------------------
       - name: "5. Overlay ipq50xx support from main and verify it"
         run: |
@@ -347,14 +339,6 @@ jobs:
       - name: "12. Toolchain"
         timeout-minutes: 100
         run: ./stage.sh toolchain toolchain/install
-
-      - name: "12b. Save toolchain cache"
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            openwrt/staging_dir/toolchain-*
-            openwrt/build_dir/toolchain-*
-          key: mx2000-tc-${{ env.TAG }}-${{ env.IMG }}-v2
 
       - name: "13. Kernel compile + verify kernel config"
         timeout-minutes: 90
