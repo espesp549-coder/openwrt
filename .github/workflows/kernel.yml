@@ -274,11 +274,19 @@ jobs:
               N=$((N+1))
             done < /tmp/base-$k.txt
           done
+          # أي باتش generic بالـ BASE يعرّف أو يستخدم nvmem_layout_parse_mac_base (حتى لو تغيّر اسمه أو مكانه)
+          git grep -l 'nvmem_layout_parse_mac_base' "$BASE" -- 'target/linux/generic/' 2>/dev/null | sed "s#^$BASE:##" | grep -E -- '-6\.6/' > /tmp/base-macbase.txt || true
+          echo "--- patches mentioning nvmem_layout_parse_mac_base in BASE ---"; cat /tmp/base-macbase.txt
+          while read -r f; do
+            mkdir -p "$(dirname "$f")"; git show "$BASE:$f" > "$f"; N=$((N+1))
+          done < /tmp/base-macbase.txt
+          cat /tmp/base-backport.txt /tmp/base-pending.txt /tmp/base-hack.txt /tmp/base-macbase.txt > ../out/06d-synced-files.txt 2>/dev/null || true
           git add -A
           git diff --cached --stat | tail -n 40 | tee ../out/06d-generic-sync.txt
           check "synced at least 8 qpic/nvmem generic patches (got $N)" test "$N" -ge 8
           check "SNAND driver patch present" sh -c "ls target/linux/generic/*-6.6/ | grep -qiE 'spi-qpic.*(add-driver|driver)'"
           check "ascii-env layout patch present" sh -c "ls target/linux/generic/pending-6.6/ | grep -qi 'ascii-env'"
+          check "a patch defining nvmem_layout_parse_mac_base is present (ascii-env.c calls it)" sh -c "grep -rlq '+void nvmem_layout_parse_mac_base' target/linux/generic/*-6.6/"
           git -c core.hooksPath=/dev/null commit -q -m "generic: sync QPIC SPI-NAND and NVMEM ascii-env patches from BASE" || true
 
       - name: "7. Fix kernel patches for 6.6.144 (with asserts)"
@@ -310,7 +318,7 @@ jobs:
           check "0116 no longer touches MAX_HALT_REG" sh -c "! grep -q 'MAX_HALT_REG' $P16"
           cd "$GITHUB_WORKSPACE/openwrt" && git add -A && git commit -q -m "fix 0113/0116 for kernel 6.6.144"
 
-      # -------------------------------------------------------------------
+      # ------------------------------------------------------------------
       - name: "8. Feeds"
         run: |
           source ./ci-lib.sh
@@ -397,7 +405,12 @@ jobs:
           check "kernel has SPI_QPIC_SNAND driver (spi-qpic-snand.c + Kconfig)" sh -c "test -f '$KDIR/drivers/spi/spi-qpic-snand.c' && grep -q 'config SPI_QPIC_SNAND' '$KDIR/drivers/spi/Kconfig'"
           check "kernel has NVMEM ascii-env layout" sh -c "grep -q 'config NVMEM_LAYOUT_ASCII_ENV' '$KDIR/drivers/nvmem/layouts/Kconfig'"
           # RISK: سلسلة الـ MAC كاملة (devinfo -> ascii-env layout -> mac-base cell -> gmac)
-          check "nvmem core knows 'mac-base' cells (needed by hw_mac_addr)" grep -q 'mac-base' "$KDIR/drivers/nvmem/core.c"
+          echo "--- files in the kernel tree that mention mac-base ---"
+          grep -rl 'mac-base' "$KDIR/drivers/nvmem" "$KDIR/net/ethernet" "$KDIR/include/linux" 2>/dev/null | tee ../out/11-mac-base-files.txt || true
+          # بدون هذي الدالة ascii-env.c ما ينبني (compile error)، وبدون ascii_read ما يقرأ hw_mac_addr (نص ASCII بطول 17)
+          check "nvmem knows 'mac-base' cells somewhere in drivers/nvmem or include (needed by hw_mac_addr)" test -s ../out/11-mac-base-files.txt
+          check "nvmem_layout_parse_mac_base exists (ascii-env.c calls it; 809-01 applied)" sh -c "grep -rq 'nvmem_layout_parse_mac_base' '$KDIR/include' '$KDIR/drivers/nvmem'"
+          soft "nvmem mac-base code handles raw_len (ASCII MAC text -> 6 bytes)" sh -c "grep -rq 'raw_len' '$KDIR/drivers/nvmem' '$KDIR/include/linux'"
           check "ascii-env layout driver matches ascii-eq-delim-env" grep -rq 'ascii-eq-delim-env' "$KDIR/drivers/nvmem/layouts"
           check "spi-qpic-snand matches qcom,ipq9574-snand (DTS fallback compatible)" grep -q 'qcom,ipq9574-snand' "$KDIR/drivers/spi/spi-qpic-snand.c"
 
