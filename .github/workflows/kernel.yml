@@ -2,6 +2,11 @@ name: Build MX2000 24.10.8 (verified)
 
 on:
   workflow_dispatch:
+    inputs:
+      fresh:
+        description: 'Ignore all build caches (use if a cached run misbehaves)'
+        type: boolean
+        default: false
 
 env:
   TAG: v24.10.8
@@ -48,6 +53,7 @@ jobs:
               sed -n '/^configure:.*checking for suffix of object files/,/^## Cache variables/p' "$f" | head -n 60
               cp "$f" "$GITHUB_WORKSPACE/out/cfglog-$name-$(echo "$f" | tr '/' '_')"
             done
+            if [ -n "$STAGE_NO_RETRY" ]; then echo "- **FAIL** stage $name (no retry)" >> "$GITHUB_WORKSPACE/out/summary.md"; exit 1; fi
             echo "----- retry single-threaded for a readable error (max 30 min) -----"
             timeout 30m make -j1 "$@" V=s 2>&1 | tail -n 200 > "$GITHUB_WORKSPACE/out/stage-$name-retry-tail.txt"
             tail -n 80 "$GITHUB_WORKSPACE/out/stage-$name-retry-tail.txt"
@@ -102,15 +108,24 @@ jobs:
             echo "runner image: $IMG"
             date -u
           } | tee ../out/00-build-info.txt
+          # git clone يعطي كل الملفات وقت "الآن"، فيعتبر make إن المصدر أحدث من الـ stamps المسترجعة ويعيد بناء كل شي.
+          # نخلي كل ملفات المصدر قديمة (2020) والملفات الي تتعدل بالخطوات 5-7 تاخذ وقت جديد وتنبني من جديد فقط.
+          git ls-files -z | xargs -0 touch -h -d '2020-01-01 00:00:00'
 
-      - name: "4a. Restore host-tools + downloads cache"
+      - name: "4a. Restore base cache (host tools + toolchain + downloads)"
+        id: cacheA
+        if: ${{ !inputs.fresh }}
         uses: actions/cache/restore@v4
         with:
           path: |
             openwrt/staging_dir/host
+            openwrt/staging_dir/hostpkg
+            openwrt/staging_dir/toolchain-*
             openwrt/build_dir/host
+            openwrt/build_dir/hostpkg
+            openwrt/build_dir/toolchain-*
             openwrt/dl
-          key: mx2000-host-${{ env.TAG }}-${{ env.IMG }}-v2
+          key: mx2000-base-${{ env.TAG }}-${{ env.IMG }}-v3
 
       # ------------------------------------------------------------------
       - name: "5. Overlay ipq50xx support from main and verify it"
@@ -216,6 +231,38 @@ jobs:
           check "931 patch no longer uses undeclared addr" sh -c "! grep -qE '&addr\)' package/kernel/mac80211/patches/ath11k/931-*m3-dump*.patch"
           git add -A && git commit -q -m "fix 931 m3-dump patch: declare its own variable"
 
+      - name: "6c. qca-ssdk: add ipq50xx (MP) support from main (7bffb469bc)"
+        run: |
+          source ./ci-lib.sh
+          cd openwrt
+          SSDK_COMMIT=7bffb469bc
+          check "ssdk commit $SSDK_COMMIT is in the clone" git cat-file -e "$SSDK_COMMIT^{commit}"
+          git format-patch -1 --stdout "$SSDK_COMMIT" -- package/kernel/qca-ssdk > /tmp/ssdk.patch
+          if git am -3 /tmp/ssdk.patch; then
+            pass "applied qca-ssdk ipq50xx commit with git am"
+          else
+            git am --abort || true
+            warn "git am failed; falling back to manual Makefile edit + patch files"
+            git checkout "$SSDK_COMMIT" -- package/kernel/qca-ssdk/patches
+            python3 - <<'PYSSDK'
+          p = 'package/kernel/qca-ssdk/Makefile'
+          s = open(p).read()
+          if 'IN_MP_PHY' not in s:
+              assert 'IN_MALIBU_PHY=FALSE \\\n' in s, 'IN_MALIBU_PHY anchor not found'
+              s = s.replace('IN_MALIBU_PHY=FALSE \\\n', 'IN_MALIBU_PHY=FALSE IN_MP_PHY=FALSE \\\n', 1)
+          if 'CHIP_TYPE=MP' not in s:
+              assert 'define Build/Compile' in s, 'Build/Compile anchor not found'
+              s = s.replace('define Build/Compile', 'ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq50xx")\n  MAKE_FLAGS+= CHIP_TYPE=MP\nendif\n\ndefine Build/Compile', 1)
+          open(p, 'w').write(s)
+          PYSSDK
+            git add -A && git commit -q -m "qca-ssdk: ipq50xx support (manual)"
+          fi
+          D=package/kernel/qca-ssdk
+          check "ssdk Makefile sets CHIP_TYPE=MP for ipq50xx" grep -q 'CHIP_TYPE=MP' $D/Makefile
+          check "ssdk Makefile sets IN_MP_PHY=FALSE" grep -q 'IN_MP_PHY=FALSE' $D/Makefile
+          check "ssdk patch 121 (MP build fix) present" test -f $D/patches/121-MP-fix-build-issues.patch
+          check "ssdk patches 111/112/122 present" sh -c "test -f $D/patches/111-*.patch && test -f $D/patches/112-*.patch && test -f $D/patches/122-*.patch"
+
       - name: "7. Fix kernel patches for 6.6.144 (with asserts)"
         run: |
           source ./ci-lib.sh
@@ -279,19 +326,42 @@ jobs:
           check "uboot-envtools selected" grep -qx 'CONFIG_PACKAGE_uboot-envtools=y' .config
           soft "initramfs image enabled" grep -qx 'CONFIG_TARGET_ROOTFS_INITRAMFS=y' .config
 
+      - name: "9b. Compute kernel/wifi cache key"
+        id: bkey
+        run: |
+          cd openwrt
+          H=$( { for d in target/linux package/kernel/mac80211 package/kernel/linux package/firmware package/boot include scripts toolchain tools; do echo "$d $(git rev-parse HEAD:$d)"; done; grep -v '^#' .config; } | sha256sum | cut -c1-24)
+          echo "source+config hash: $H"
+          echo "prefix=mx2000-target-${TAG}-${IMG}-v1-${H}-" >> "$GITHUB_OUTPUT"
+
+      - name: "9c. Restore kernel/wifi build cache"
+        id: cacheB
+        if: ${{ !inputs.fresh }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt/build_dir/target-*
+            openwrt/staging_dir/target-*
+            openwrt/bin
+          key: ${{ steps.bkey.outputs.prefix }}kw
+          restore-keys: |
+            ${{ steps.bkey.outputs.prefix }}k
+
+      - name: "9d. Align source timestamps with the restored kernel/wifi cache"
+        if: ${{ steps.cacheB.outputs.cache-matched-key != '' }}
+        run: |
+          cd openwrt
+          echo "restored: ${{ steps.cacheB.outputs.cache-matched-key }}"
+          # المحتوى مطابق للكاش (المفتاح مبني على hash المصدر)، فنخلي هذي الملفات قديمة حتى ما يعيد make تطبيق الباتشات
+          for d in target/linux package/kernel/mac80211 package/kernel/linux package/firmware package/boot; do
+            git ls-files -z -- "$d" | xargs -0 -r touch -h -d '2020-01-01 00:00:00'
+          done
+          echo "- **CACHE** kernel/wifi build restored (${{ steps.cacheB.outputs.cache-matched-key }})" >> ../out/summary.md
+
       - name: "10. Host tools"
         run: |
           cd openwrt
           make -j"$(nproc)" tools/install > ../out/10-tools.log 2>&1 || { tail -n 60 ../out/10-tools.log; exit 1; }
-
-      - name: "10b. Save host-tools cache"
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            openwrt/staging_dir/host
-            openwrt/build_dir/host
-            openwrt/dl
-          key: mx2000-host-${{ env.TAG }}-${{ env.IMG }}-v2
 
       # ------------------------------------------------------------------
       - name: "11. Kernel patches + DTS compile + driver check (fast)"
@@ -346,12 +416,16 @@ jobs:
           else
             NEW=$(grep -oE '\bqpic_[a-z0-9_]+' ../out/11b-props-struct.txt | sort -u)
             check "exactly one qpic_* member in struct (got: $NEW)" test "$(echo "$NEW" | wc -w)" -eq 1
+            if ! grep -q 'props->qpic_v2' "$F"; then
+              pass "already renamed to props->$NEW (kernel tree restored from cache)"
+            else
             cp "$F" /tmp/qcom_nandc.c.orig
             sed -i -E "s/(props->)qpic_v2\b/\1$NEW/g" "$F"
             diff -u /tmp/qcom_nandc.c.orig "$F" > ../out/11b-qpic-fix.diff || true
             check "qpic_v2 uses were rewritten" test -s ../out/11b-qpic-fix.diff
             check "no leftover props->qpic_v2" sh -c "! grep -q 'props->qpic_v2' '$F'"
             pass "renamed props->qpic_v2 to props->$NEW in qcom_nandc.c"
+            fi
           fi
           grep -rn --include='*.c' --include='*.h' '\bqpic_v2\b' "$KDIR/drivers" "$KDIR/include" > ../out/11b-leftover-qpic_v2.txt || true
           L=$(wc -l < ../out/11b-leftover-qpic_v2.txt)
@@ -370,13 +444,43 @@ jobs:
 
       - name: "12. Toolchain"
         timeout-minutes: 100
-        run: ./stage.sh toolchain toolchain/install
+        env:
+          CACHE_A_HIT: ${{ steps.cacheA.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_A_HIT" = "true" ]; then
+            if ! STAGE_NO_RETRY=1 ./stage.sh toolchain toolchain/install; then
+              echo "::warning::toolchain failed on top of the restored cache; wiping tools+toolchain and rebuilding from scratch (bump -v3 in the base cache key afterwards)"
+              echo "- **WARN** base cache was bad: tools+toolchain rebuilt from scratch" >> out/summary.md
+              (cd openwrt && rm -rf build_dir/host build_dir/hostpkg build_dir/toolchain-* staging_dir/host staging_dir/hostpkg staging_dir/toolchain-*)
+              (cd openwrt && make -j"$(nproc)" tools/install > ../out/12-tools-fresh.log 2>&1) || { tail -n 60 out/12-tools-fresh.log; exit 1; }
+              ./stage.sh toolchain-fresh toolchain/install
+            fi
+          else
+            ./stage.sh toolchain toolchain/install
+          fi
+
+      - name: "12b. Save base cache (host tools + toolchain + downloads)"
+        if: ${{ steps.cacheA.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/staging_dir/host
+            openwrt/staging_dir/hostpkg
+            openwrt/staging_dir/toolchain-*
+            openwrt/build_dir/host
+            openwrt/build_dir/hostpkg
+            openwrt/build_dir/toolchain-*
+            openwrt/dl
+          key: mx2000-base-${{ env.TAG }}-${{ env.IMG }}-v3
 
       - name: "13. Kernel compile + verify kernel config"
         timeout-minutes: 90
+        env:
+          CACHE_B_MATCH: ${{ steps.cacheB.outputs.cache-matched-key }}
         run: |
           source ./ci-lib.sh
-          ./stage.sh kernel target/linux/compile
+          if [ -n "$CACHE_B_MATCH" ]; then export STAGE_NO_RETRY=1; fi
+          ./stage.sh kernel target/linux/compile || { [ -z "$CACHE_B_MATCH" ] || echo "::error::kernel stage failed on top of a restored cache - rerun the workflow with fresh=true"; exit 1; }
           cd "$GITHUB_WORKSPACE/openwrt"
           KCFG=$(ls build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.*/.config | head -n1)
           check "kernel .config found" test -f "$KCFG"
@@ -413,17 +517,40 @@ jobs:
           check "CONFIG_NET_SWITCHDEV=y in kernel" grep -qx 'CONFIG_NET_SWITCHDEV=y' "$KCFG"
           check "CONFIG_ARCH_QCOM=y in kernel" grep -qx 'CONFIG_ARCH_QCOM=y' "$KCFG"
 
+      - name: "13b. Save kernel cache"
+        if: ${{ steps.cacheB.outputs.cache-matched-key == '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/build_dir/target-*
+            openwrt/staging_dir/target-*
+            openwrt/bin
+          key: ${{ steps.bkey.outputs.prefix }}k
+
       - name: "14. Wi-Fi stack (mac80211 QCN6122 patches, firmware, BDF) + verify"
         timeout-minutes: 90
+        env:
+          CACHE_B_MATCH: ${{ steps.cacheB.outputs.cache-matched-key }}
         run: |
           source ./ci-lib.sh
-          ./stage.sh wifi package/kernel/mac80211/compile package/firmware/ipq-wifi/compile package/firmware/ath11k-firmware/compile
+          if [ -n "$CACHE_B_MATCH" ]; then export STAGE_NO_RETRY=1; fi
+          ./stage.sh wifi package/kernel/mac80211/compile package/firmware/ipq-wifi/compile package/firmware/ath11k-firmware/compile || { [ -z "$CACHE_B_MATCH" ] || echo "::error::wifi stage failed on top of a restored cache - rerun the workflow with fresh=true"; exit 1; }
           cd "$GITHUB_WORKSPACE/openwrt"
           KO=$(find build_dir -name 'ath11k_ahb.ko' | head -n1)
           check "ath11k_ahb.ko was built" test -n "$KO"
           check "ath11k_ahb.ko contains QCN6122 support" sh -c "strings -a '$KO' | grep -qi qcn6122"
           check "ipq-wifi MX2000 package built" test -n "$(find bin -name 'ipq-wifi-linksys_mx2000_*.ipk' | head -n1)"
           soft "ath11k firmware packages built" test -n "$(find bin -name 'ath11k-firmware-*.ipk' | head -n1)"
+
+      - name: "14b. Save kernel + wifi cache"
+        if: ${{ steps.cacheB.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/build_dir/target-*
+            openwrt/staging_dir/target-*
+            openwrt/bin
+          key: ${{ steps.bkey.outputs.prefix }}kw
 
       - name: "15. Full build"
         timeout-minutes: 240
@@ -523,4 +650,3 @@ jobs:
             openwrt/bin/targets/qualcommax/ipq50xx/*linksys_mx2000*
             openwrt/bin/targets/qualcommax/ipq50xx/sha256sums
           if-no-files-found: error
-          
