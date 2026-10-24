@@ -62,10 +62,419 @@ jobs:
           fi
           STAGE
           chmod +x stage.sh
+          cat > compare-mx2000.py <<'CMPPY'
+          #!/usr/bin/env python3
+          """MX2000 flash-readiness checks (static safety + comparison with the real router).
+
+          Level 1 (needs only the built DTS/images): can this build do damage / is it self-consistent?
+          Level 2 (needs --ref-dir from the router, see mx2000-preflight.sh): does it match the hardware
+                  that is running OpenWrt 25 today (partition table, memory map, FIT parameters, upgrade scripts)?
+          Exit code: 0 = no CRITICAL finding, 2 = at least one CRITICAL finding.
+          """
+          import argparse, difflib, os, re, subprocess, sys, tarfile
+
+          # ---------------------------------------------------------------- DTS parsing
+          def parse_dts(text):
+              text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+              text = re.sub(r'(?m)//.*$', '', text)
+              root = {'name': '/', 'props': {}, 'kids': {}}
+              stack = [root]
+              for m in re.finditer(r'([^{};]*)\{|\}\s*;|([^{};]+);', text):
+                  if m.group(1) is not None:
+                      hdr = m.group(1).strip()
+                      if hdr == '/':
+                          stack.append(root); continue
+                      name = hdr.split(':')[-1].strip()
+                      node = {'name': name, 'props': {}, 'kids': {}}
+                      stack[-1]['kids'][name] = node
+                      stack.append(node)
+                  elif m.group(2) is None:
+                      if len(stack) > 1: stack.pop()
+                  else:
+                      stmt = m.group(2).strip()
+                      if stmt.startswith('/') and stmt.endswith('/') or stmt.startswith(('/dts-v1/', '/memreserve/', '/plugin/')):
+                          continue
+                      if '=' in stmt:
+                          k, v = stmt.split('=', 1)
+                          stack[-1]['props'][k.strip()] = ' '.join(v.split())
+                      elif stmt:
+                          stack[-1]['props'][stmt] = ''
+              return root
+
+          def walk(node, path=''):
+              yield (path or '/'), node
+              for n, k in node['kids'].items():
+                  yield from walk(k, (path if path != '/' else '') + '/' + n)
+
+          def cells(v):
+              out = []
+              for grp in re.findall(r'<([^>]*)>', v):
+                  for t in grp.split():
+                      try: out.append(int(t, 0))
+                      except ValueError: pass
+              return out
+
+          def join32(lst):
+              n = 0
+              for x in lst: n = (n << 32) | x
+              return n
+
+          def strings(v):
+              out = []
+              for x in re.findall(r'"([^"]*)"', v):
+                  out.extend(x.split('\\0'))
+              return out
+
+          def load_dts(path):
+              if path.endswith('.dtb'):
+                  txt = subprocess.run(['dtc', '-I', 'dtb', '-O', 'dts', '-q', path], capture_output=True, text=True).stdout
+              else:
+                  txt = open(path, errors='replace').read()
+              return parse_dts(txt)
+
+          def partitions(root):
+              out = {}
+              for path, node in walk(root):
+                  if 'fixed-partitions' in node['props'].get('compatible', ''):
+                      ac = int(cells(node['props'].get('#address-cells', '<1>'))[0]) if node['props'].get('#address-cells') else 1
+                      sc = int(cells(node['props'].get('#size-cells', '<1>'))[0]) if node['props'].get('#size-cells') else 1
+                      for kn, kid in node['kids'].items():
+                          lab = strings(kid['props'].get('label', ''))
+                          reg = cells(kid['props'].get('reg', ''))
+                          if lab and len(reg) >= ac + sc:
+                              out[lab[0]] = dict(off=join32(reg[:ac]), size=join32(reg[ac:ac + sc]),
+                                                 ro='read-only' in kid['props'], path=path + '/' + kn)
+              return out
+
+          # ---------------------------------------------------------------- report
+          class Report:
+              def __init__(self): self.rows = []
+              def add(self, lvl, msg): self.rows.append((lvl, msg)); print(f'[{lvl}] {msg}')
+              def count(self, lvl): return sum(1 for l, _ in self.rows if l == lvl)
+
+          # يجب أن تكون read-only (bootloader + معايرة + معلومات الجهاز). أقسام الـ env (u_env, s_env, 0:APPSBLENV) لازم تبقى writable لأن fw_setenv يكتب فيها.
+          CRIT_RX = re.compile(r'^(0:(SBL1|MIBIB|QSEE|DEVCFG|CDT|APPSBL|ART|TRAINING)|devinfo)$')
+          ENV_RX = re.compile(r'^(u_env|s_env|0:APPSBLENV)$')
+          SKIP_PROPS = {'phandle', 'linux,phandle', 'clocks', 'resets', 'interrupt-parent', 'phys', 'phy-handle', 'pinctrl-0',
+                        'pinctrl-1', 'pinctrl-2', 'memory-region', 'nvmem-cells', 'power-domains', 'iommus', 'mboxes',
+                        'interrupts-extended', 'qcom,smem-states', 'local-mac-address', 'mac-address', 'bootargs'}
+          def norm_prop(k, v):
+              if k.endswith('gpios') or k in ('gpio', 'gpios'):
+                  c = cells(v); return ' '.join(hex(x) for x in c[1:]) if c else v
+              return v
+
+          def hr(n): return f'0x{n:x} ({n/1048576:.2f} MiB)'
+
+          # ---------------------------------------------------------------- level 1
+          def level1(rep, built, args):
+              P = partitions(built)
+              if not P: rep.add('CRIT', 'no fixed-partitions found in the built DTS'); return P
+              rep.add('OK', f'built DTS has {len(P)} partitions: ' + ', '.join(sorted(P)))
+              rootp = built['props']
+              comp = strings(rootp.get('compatible', ''))
+              rep.add('OK' if 'linksys,mx2000' in comp else 'CRIT', f'root compatible = {comp} (sysupgrade/board_name needs linksys,mx2000)')
+              for lab, p in sorted(P.items(), key=lambda x: x[1]['off']):
+                  if CRIT_RX.match(lab) and not p['ro']:
+                      rep.add('CRIT', f'bootloader/calibration partition "{lab}" is WRITABLE in the built DTS (kernel could overwrite it)')
+              if not any(l == 'CRIT' and 'WRITABLE' in m for l, m in rep.rows):
+                  rep.add('OK', 'all bootloader/calibration partitions (SBL1, MIBIB, QSEE, DEVCFG, CDT, APPSBL, ART, TRAINING, devinfo) are read-only')
+              for lab, p in sorted(P.items()):
+                  if ENV_RX.match(lab) and not p['ro']:
+                      rep.add('INFO', f'env partition "{lab}" is writable (expected: fw_setenv/boot_part switching writes there)')
+              writable = {l: p for l, p in P.items() if not p['ro']}
+              for a, pa in P.items():
+                  if not CRIT_RX.match(a): continue
+                  for b, pb in writable.items():
+                      if a != b and pa['off'] < pb['off'] + pb['size'] and pb['off'] < pa['off'] + pa['size']:
+                          rep.add('CRIT', f'critical partition "{a}" overlaps writable partition "{b}"')
+              for need in ('kernel', 'rootfs', 'alt_kernel', 'alt_rootfs', '0:ART', 'u_env', 's_env', 'devinfo'):
+                  if need not in P: rep.add('WARN', f'expected partition "{need}" missing from the built DTS')
+
+              # images
+              k, r = P.get('kernel'), P.get('rootfs')
+              if args.sysupgrade and os.path.exists(args.sysupgrade) and k and r:
+                  try:
+                      with tarfile.open(args.sysupgrade) as tf:
+                          names = {m.name.split('/')[-1]: m for m in tf.getmembers() if m.isfile()}
+                          rep.add('OK' if {'kernel', 'root'} <= set(names) else 'CRIT', f'sysupgrade tar members: {sorted(names)}')
+                          if 'kernel' in names:
+                              kd = tf.extractfile(names['kernel']).read(); ks = len(kd)
+                              rep.add('OK' if kd[:4] == b'\xd0\x0d\xfe\xed' else 'CRIT', 'kernel member is a FIT/DTB image (magic d00dfeed)')
+                              limit = (r['off'] - k['off']) if r['off'] > k['off'] else k['size']
+                              limit = min(limit, k['size'])
+                              rep.add('OK' if ks <= limit else 'CRIT', f'kernel image {hr(ks)} vs space before rootfs/kernel partition {hr(limit)}')
+                          if 'root' in names:
+                              rd = tf.extractfile(names['root']); magic = rd.read(4); rs = names['root'].size
+                              rep.add('OK' if magic == b'hsqs' else 'WARN', f'root member magic = {magic!r} (squashfs is b\'hsqs\')')
+                              rep.add('OK' if rs <= 0.85 * r['size'] else 'CRIT', f'root image {hr(rs)} vs 85% of rootfs partition {hr(int(0.85*r["size"]))}')
+                  except Exception as e:
+                      rep.add('WARN', f'could not inspect sysupgrade image: {e}')
+              elif args.sysupgrade:
+                  rep.add('WARN', 'sysupgrade image or kernel/rootfs partitions not available for the size check')
+              if args.factory and os.path.exists(args.factory) and k and r:
+                  fs = os.path.getsize(args.factory)
+                  rep.add('OK' if fs <= k['size'] + r['size'] else 'CRIT', f'factory image {hr(fs)} vs kernel+rootfs partitions {hr(k["size"]+r["size"])}')
+                  rep.add('INFO', 'factory.bin acceptance by the STOCK Linksys firmware cannot be verified offline - prefer flashing from the running OpenWrt (sysupgrade) after a RAM-boot test')
+
+              # uboot-envtools block
+              if args.envtools_block and os.path.exists(args.envtools_block):
+                  blk = open(args.envtools_block, errors='replace').read()
+                  m = re.search(r'mx2000.*?;;', blk, flags=re.S)
+                  if not m: rep.add('WARN', 'MX2000 block not found in the built uboot-envtools file')
+                  else:
+                      for line in m.group(0).splitlines():
+                          if 'ubootenv_add' in line:
+                              toks = re.findall(r'"([^"]+)"', line)
+                              nm = toks[0] if toks else ''
+                              if nm in P:
+                                  nums = [int(t, 16) for t in toks[1:] if re.fullmatch(r'0x[0-9a-fA-F]+', t)]
+                                  if len(nums) >= 2 and nums[0] + nums[1] > P[nm]['size']:
+                                      rep.add('CRIT', f'envtools "{nm}": offset+env size {hr(nums[0]+nums[1])} exceeds partition {hr(P[nm]["size"])}')
+                                  else: rep.add('OK', f'envtools "{nm}" matches a DTS partition ({line.strip()})')
+                              elif nm: rep.add('WARN', f'envtools names "{nm}" which is not a DTS partition label ({line.strip()})')
+              return P
+
+          # ---------------------------------------------------------------- FIT info
+          def fit_info(path, mkimage):
+              if not mkimage or not os.path.exists(path): return None
+              out = subprocess.run([mkimage, '-l', path], capture_output=True, text=True).stdout
+              keys = ('Architecture', 'Compression', 'Load Address', 'Entry Point', 'Default Configuration', 'OS', 'Type')
+              info = {}
+              for line in out.splitlines():
+                  for kk in keys:
+                      m = re.match(r'\s*' + re.escape(kk) + r':\s*(.*)', line)
+                      if m: info.setdefault(kk, set()).add(m.group(1).strip())
+              cfgs = re.findall(r'Configuration \d+ \(([^)]*)\)', out)
+              if cfgs: info['Configurations'] = set(cfgs)
+              return info
+
+          # ---------------------------------------------------------------- level 2
+          def level2(rep, built, P, args):
+              d = args.ref_dir
+              run = None
+              for nm in ('running.dtb', 'running.dts'):
+                  if os.path.exists(os.path.join(d, nm)): run = load_dts(os.path.join(d, nm)); break
+              if run is None:
+                  rep.add('WARN', f'no {d}/running.dtb (or running.dts): run mx2000-preflight.sh on the router and commit ref/ to enable the comparison')
+                  return False
+              rep.add('OK', 'reference device tree from the real router loaded')
+              RP = partitions(run)
+              if not RP: rep.add('WARN', 'running DTB has no fixed-partitions (router may use another partition scheme)')
+              for lab, rp in sorted(RP.items(), key=lambda x: x[1]['off']):
+                  bp = P.get(lab)
+                  if not bp: rep.add('WARN', f'partition "{lab}" exists on the router but not in the built DTS'); continue
+                  if (rp['off'], rp['size']) != (bp['off'], bp['size']):
+                      rep.add('CRIT', f'partition "{lab}" differs: router off/size {hex(rp["off"])}/{hex(rp["size"])} vs built {hex(bp["off"])}/{hex(bp["size"])}')
+                  elif rp['ro'] and not bp['ro']:
+                      rep.add('CRIT', f'partition "{lab}" is read-only on the router but writable in the built DTS')
+                  else: rep.add('OK', f'partition "{lab}" identical (off {hex(bp["off"])}, size {hex(bp["size"])})')
+              for lab in P:
+                  if lab not in RP and RP: rep.add('INFO', f'partition "{lab}" only exists in the built DTS')
+
+              # root / chosen / memory
+              for key in ('compatible', 'model', 'qcom,msm-id', 'qcom,board-id'):
+                  a, b = run['props'].get(key), built['props'].get(key)
+                  if a != b: rep.add('WARN', f'root {key}: router={a} built={b}')
+                  else: rep.add('OK', f'root {key} identical')
+              rn = {p: n for p, n in walk(run)}; bn = {p: n for p, n in walk(built)}
+              def compare_nodes(rx, label, lvl):
+                  diffs = 0
+                  for p in sorted(set(rn) | set(bn)):
+                      if not re.search(rx, p): continue
+                      a, b = rn.get(p), bn.get(p)
+                      if a is None or b is None:
+                          rep.add(lvl, f'{label}: node {p} only in {"built" if a is None else "router"} DTS'); diffs += 1; continue
+                      for k in sorted(set(a['props']) | set(b['props'])):
+                          if k in SKIP_PROPS: continue
+                          va, vb = norm_prop(k, a['props'].get(k, '<absent>')), norm_prop(k, b['props'].get(k, '<absent>'))
+                          if va != vb:
+                              diffs += 1
+                              if diffs <= 25: rep.add(lvl, f'{label}: {p} {k}: router={va[:90]} built={vb[:90]}')
+                  if diffs == 0: rep.add('OK', f'{label}: identical')
+                  elif diffs > 25: rep.add(lvl, f'{label}: ... {diffs-25} more differences')
+              compare_nodes(r'^/memory', 'memory map', 'WARN')
+              compare_nodes(r'^/reserved-memory', 'reserved-memory (wifi/Q6 carve-outs)', 'WARN')
+              compare_nodes(r'^/chosen', 'chosen (console/bootargs)', 'WARN')
+              compare_nodes(r'(gpio-keys|/leds|pwm-leds)', 'buttons/LEDs gpios', 'WARN')
+              compare_nodes(r'(mdio|ethernet-phy|ess-switch|ess-uniphy|nss-dp|gmac)', 'ethernet/switch/phy', 'WARN')
+              compare_nodes(r'(qcn6122|wifi@|q6|wcss)', 'wifi nodes', 'WARN')
+              def enabled(nodes):
+                  return {p for p, n in nodes.items() if strings(n['props'].get('status', '"okay"'))[:1] in (['okay'], ['ok']) and 'compatible' in n['props']}
+              miss = sorted(enabled(rn) - enabled(bn))
+              if miss:
+                  rep.add('WARN', f'{len(miss)} hardware nodes are enabled on the router but missing/disabled in the built DTS (first 25): ' + ', '.join(miss[:25]))
+              else: rep.add('OK', 'every enabled hardware node of the router is enabled in the built DTS')
+
+              # FIT parameters
+              cur = fit_info(os.path.join(d, 'kernel-head.bin'), args.mkimage)
+              mine = fit_info(args.itb, args.mkimage) if args.itb else None
+              if cur and mine:
+                  for kk in ('Architecture', 'Compression', 'Load Address', 'Entry Point', 'OS', 'Type'):
+                      a, b = cur.get(kk), mine.get(kk)
+                      if a and b and a != b: rep.add('WARN', f'FIT {kk}: router kernel={sorted(a)} built={sorted(b)} (U-Boot may not boot a different layout)')
+                      elif a and b: rep.add('OK', f'FIT {kk} identical ({sorted(a)})')
+                  ca, cb = cur.get('Configurations', set()), mine.get('Configurations', set())
+                  rep.add('OK' if ca & cb else 'WARN', f'FIT configuration names: router={sorted(ca)} built={sorted(cb)}')
+              else:
+                  rep.add('INFO', 'FIT comparison skipped (needs ref/kernel-head.bin and mkimage)')
+
+              # boot-count / dual boot environment
+              envf = os.path.join(d, 'fw_printenv.txt')
+              if os.path.exists(envf):
+                  env = open(envf, errors='replace').read()
+                  for key in ('boot_part', 'bootcount', 'bootlimit', 'auto_recovery', 'upgrade_available'):
+                      rep.add('OK' if re.search(r'(?m)^' + key + r'=', env) else 'INFO', f'U-Boot env key {key}: ' + ('present' if re.search(r'(?m)^' + key + r'=', env) else 'absent'))
+              # upgrade logic: the running OS performs the flash, so its scripts matter more than ours
+              for nm, rel in (('platform.sh', 'target/linux/qualcommax/ipq50xx/base-files/lib/upgrade/platform.sh'),
+                              ('bootcount', 'target/linux/qualcommax/ipq50xx/base-files/etc/init.d/bootcount')):
+                  a, b = os.path.join(d, 'router', nm), os.path.join(args.tree, rel) if args.tree else ''
+                  if os.path.exists(a) and os.path.exists(b):
+                      A, B = open(a, errors='replace').read().splitlines(), open(b, errors='replace').read().splitlines()
+                      diff = list(difflib.unified_diff(A, B, 'router-OpenWrt25/' + nm, 'built/' + nm, lineterm='', n=1))
+                      if not diff: rep.add('OK', f'{nm}: identical to the one running on the router')
+                      else:
+                          rep.add('WARN', f'{nm}: {len(diff)} diff lines vs the OpenWrt 25 script on the router (the router\'s script performs the flash!)')
+                          open(os.path.join(args.out_dir_reports, f'18-diff-{nm}.txt'), 'w').write('\n'.join(diff))
+                  else: rep.add('INFO', f'{nm}: no copy from the router (ref/router/{nm}) - upgrade logic not compared')
+              return True
+
+          def main():
+              ap = argparse.ArgumentParser()
+              ap.add_argument('--built-dts', required=True); ap.add_argument('--ref-dir', default='')
+              ap.add_argument('--sysupgrade'); ap.add_argument('--factory'); ap.add_argument('--itb')
+              ap.add_argument('--tree', default=''); ap.add_argument('--envtools-block')
+              ap.add_argument('--mkimage', default=''); ap.add_argument('--report', default='flash-readiness.md')
+              ap.add_argument('--summary', default='')
+              args = ap.parse_args()
+              args.out_dir_reports = os.path.dirname(os.path.abspath(args.report))
+              rep = Report()
+              built = load_dts(args.built_dts)
+              P = level1(rep, built, args)
+              l1crit = rep.count('CRIT')
+              had_ref = False
+              if args.ref_dir and os.path.isdir(args.ref_dir): had_ref = level2(rep, built, P, args)
+              else: rep.add('WARN', 'no ref/ directory in the repository: comparison with the real router NOT done')
+              crit, warn = rep.count('CRIT'), rep.count('WARN')
+              ram = 'GO' if l1crit == 0 else 'NO-GO'
+              flash = 'GO' if (crit == 0 and had_ref) else 'NO-GO'
+              verdict = [f'RAM-boot test (initramfs, no flash writes): {ram}' + ('' if crit == l1crit else ' (router comparison found critical differences: relevant for flashing only)'),
+                         f'Permanent flash: {flash}' + ('' if had_ref else ' (no reference data from the real router)') + (f' - review {warn} warning(s) first' if warn and flash == 'GO' else '')]
+              with open(args.report, 'w') as f:
+                  f.write('# MX2000 flash readiness\n\n' + '\n'.join('- **%s**' % v for v in verdict) + '\n\n')
+                  for lvl in ('CRIT', 'WARN', 'INFO', 'OK'):
+                      f.write(f'## {lvl} ({rep.count(lvl)})\n' + ''.join(f'- {m}\n' for l, m in rep.rows if l == lvl) + '\n')
+              print('\n'.join(verdict))
+              if args.summary:
+                  with open(args.summary, 'a') as f:
+                      f.write('\n'.join(f'- **READINESS** {v}' for v in verdict) + f'\n- **READINESS** critical={crit} warnings={warn}\n')
+              sys.exit(2 if crit else 0)
+
+          if __name__ == '__main__':
+              main()
+          CMPPY
+          cat > mx2000-preflight.sh <<'PREFLIGHT'
+          #!/bin/sh
+          # mx2000-preflight.sh - READ-ONLY collector. Run it on the router that currently runs OpenWrt 25:
+          #     scp mx2000-preflight.sh root@192.168.1.1:/tmp/ && ssh root@192.168.1.1 sh /tmp/mx2000-preflight.sh
+          # It never writes to flash: it only reads /proc, /sys and the MTD devices (/dev/mtdNro) and writes into /tmp.
+          # Output: /tmp/mx2000-preflight.tar.gz  containing
+          #     ref/     (small, sanitized)  -> commit into your GitHub repo as ref/   (PRIVATE repo recommended)
+          #     backup/  (raw partitions)    -> keep OFFLINE, never commit (contains MAC / serial / calibration)
+
+          OUT=${OUT:-/tmp/mx2000-preflight}
+          PROC_MTD=${PROC_MTD:-/proc/mtd}
+          DRYRUN=${DRYRUN:-}
+          rm -rf "$OUT"; mkdir -p "$OUT/ref/router" "$OUT/backup"
+          log() { echo "[preflight] $*"; }
+          run() { if [ -n "$DRYRUN" ]; then echo "+ $*"; else "$@"; fi; }
+
+          log "1/7 identity"
+          { echo "model: $(cat /proc/device-tree/model 2>/dev/null | tr -d '\000')"
+            echo "compatible: $(cat /proc/device-tree/compatible 2>/dev/null | tr '\000' ' ')"
+            echo "kernel: $(uname -r)"; cat /etc/openwrt_release 2>/dev/null; } > "$OUT/ref/identity.txt"
+          cat "$PROC_MTD" > "$OUT/ref/mtd.txt" 2>/dev/null
+          cat /proc/cmdline > "$OUT/ref/cmdline.txt" 2>/dev/null
+
+          log "2/7 running device tree (U-Boot patched, contains MAC addresses: sanitize before sharing)"
+          if [ -r /sys/firmware/fdt ]; then run cp /sys/firmware/fdt "$OUT/ref/running.dtb"; else log "WARNING: /sys/firmware/fdt missing"; fi
+
+          log "3/7 U-Boot environment (read only) - sensitive values are masked"
+          if command -v fw_printenv >/dev/null 2>&1; then
+            fw_printenv 2>/dev/null | awk -F= '{ k=tolower($1);
+                if (k ~ /serial|_sn|^sn|ssid|psk|pass|key|token|mac|addr/ && k !~ /ipaddr|serverip|netmask|gatewayip/) print $1"=<redacted>";
+                else { gsub(/([0-9A-Fa-f][0-9A-Fa-f][:-]){5}[0-9A-Fa-f][0-9A-Fa-f]/, "XX:XX:XX:XX:XX:XX"); print } }' > "$OUT/ref/fw_printenv.txt"
+          else log "WARNING: fw_printenv not installed (opkg/apk install uboot-envtools)"; fi
+
+          log "4/7 the scripts that will perform the flash (these decide what happens, not ours)"
+          for f in /lib/upgrade/platform.sh /lib/upgrade/linksys.sh /lib/upgrade/nand.sh; do
+            [ -r "$f" ] && cp "$f" "$OUT/ref/router/$(basename "$f")"
+          done
+          [ -r /etc/init.d/bootcount ] && cp /etc/init.d/bootcount "$OUT/ref/router/bootcount"
+          [ -r /etc/board.json ] && grep -v -iE 'macaddr|mac_address|ssid|key' /etc/board.json > "$OUT/ref/router/board.json"
+
+          log "5/7 partition list"
+          cat "$PROC_MTD" | tail -n +2 | while read dev size erase name; do
+            dev=${dev%:}; name=$(echo "$name" | tr -d '"'); echo "$dev $size $erase $name"
+          done > "$OUT/ref/mtd-parsed.txt"
+
+          log "6/7 backup of the small critical partitions (bootloader, calibration, env, device info)"
+          while read dev size erase name; do
+            sz=$((0x$size))
+            case "$name" in
+              0:SBL1|0:MIBIB|0:QSEE|0:DEVCFG|0:CDT|0:APPSBL|0:APPSBLENV|0:ART|0:TRAINING|u_env|s_env|devinfo|sysdiag)
+                src=/dev/${dev}ro; [ -e "$src" ] || src=/dev/$dev
+                safe=$(echo "$name" | tr ':' '_')
+                log "  $name ($sz bytes) <- $src"
+                run dd if="$src" of="$OUT/backup/$safe.bin" bs=65536 2>/dev/null ;;
+            esac
+          done < "$OUT/ref/mtd-parsed.txt"
+          ( cd "$OUT/backup" && sha256sum *.bin > SHA256SUMS 2>/dev/null )
+
+          log "7/7 head of the kernel partitions (FIT header: load address, compression, config names)"
+          while read dev size erase name; do
+            case "$name" in kernel|alt_kernel)
+              src=/dev/${dev}ro; [ -e "$src" ] || src=/dev/$dev
+              magic=$(dd if="$src" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+              if [ "$magic" = "d00dfeed" ]; then
+                b=$(dd if="$src" bs=1 skip=4 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
+                total=$((0x$b)); [ "$total" -gt 33554432 ] && total=33554432
+                cnt=$(( (total + 4095) / 4096 ))
+                run dd if="$src" of="$OUT/ref/kernel-head-$name.bin" bs=4096 count=$cnt 2>/dev/null
+                log "  $name: FIT of $total bytes saved"
+              else log "  $name: no FIT magic at offset 0 (got '$magic'), skipped"; fi ;;
+            esac
+          done < "$OUT/ref/mtd-parsed.txt"
+          # the partition that is actually booted (boot_part) is the reference; fall back to the first one
+          if [ -f "$OUT/ref/kernel-head-kernel.bin" ]; then cp "$OUT/ref/kernel-head-kernel.bin" "$OUT/ref/kernel-head.bin"
+          elif [ -f "$OUT/ref/kernel-head-alt_kernel.bin" ]; then cp "$OUT/ref/kernel-head-alt_kernel.bin" "$OUT/ref/kernel-head.bin"; fi
+
+          ( cd "$OUT" && tar czf /tmp/mx2000-preflight.tar.gz ref backup )
+          log "done: /tmp/mx2000-preflight.tar.gz"
+          cat <<EOF
+
+          Next steps (on your PC):
+            scp root@<router>:/tmp/mx2000-preflight.tar.gz .      && tar xzf mx2000-preflight.tar.gz
+            1) KEEP backup/ OFFLINE (it holds MAC, serial and the Wi-Fi calibration; a lost ART partition cannot be recreated).
+            2) Make the device tree safe to publish, then put ref/ in your repo:
+                 dtc -I dtb -O dts ref/running.dtb | sed -E '/mac-address|serial|ethaddr/d' > ref/running.dts && rm ref/running.dtb
+            3) git add ref && git commit -m "reference data from the real MX2000" && git push   (prefer a PRIVATE repo)
+            4) Re-run the workflow: step 18 compares the build with this data and prints GO / NO-GO.
+          Optional FULL backup of both firmware slots, streamed over SSH (does not use router RAM):
+            ssh root@<router> 'dd if=/dev/mtdXro bs=64k' > mtdX.bin     (X from ref/mtd.txt: kernel, rootfs, alt_kernel, alt_rootfs)
+          EOF
+          PREFLIGHT
 
           echo "IMG=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
           echo "runner image: ${ImageVersion:-unknown}"
           nproc; free -h
+
+      - name: "0b. Checkout own repo (ref/ = data collected from the real router, optional)"
+        uses: actions/checkout@v4
+        with:
+          path: selfrepo
+          sparse-checkout: |
+            ref
+          fetch-depth: 1
 
       - name: "1. Free disk space (and require enough)"
         run: |
@@ -535,8 +944,9 @@ jobs:
             soft "kernel config: CONFIG_$sym enabled" grep -qE "^CONFIG_${sym}=(y|m)" "$KCFG"
           done
           VML=$(find build_dir -name vmlinux -path '*linux-6.6*' 2>/dev/null | head -n1)
-          soft "SNAND driver is in the kernel (built-in string or module)" sh -c "strings -a '$VML' 2>/dev/null | grep -q 'qcom,ipq9574-snand' || find build_dir -name 'spi-qpic-snand.ko' | grep -q ."
-          soft "ascii-env layout is in the kernel (built-in string or module)" sh -c "strings -a '$VML' 2>/dev/null | grep -q 'ascii-eq-delim-env' || find build_dir -name 'ascii-env.ko' | grep -q ."
+          KD=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.* | head -n1)
+          soft "SNAND driver object was compiled (spi-qpic-snand.o / .ko)" sh -c "find '$KD/drivers/spi' -name 'spi-qpic-snand.*o' | grep -q ."
+          soft "ascii-env layout object was compiled" sh -c "find '$KD/drivers/nvmem/layouts' -name '*ascii*.*o' | grep -q ."
 
           verify_cfg() {   # $1 = file, $2 = label; returns number of mismatches
             local f="$1" tag="$2" miss=0 l sym
@@ -671,7 +1081,10 @@ jobs:
 
           # دوال sysupgrade غير معرّفة (فحص تقريبي)
           PL=$B/lib/upgrade/platform.sh
+          ENVBINS=$(tar -xzOf "$IPK2" ./data.tar.gz | tar -tz 2>/dev/null | xargs -r -n1 basename)
           for fn in $(grep -oE '\b[a-z][a-z0-9]*(_[a-z0-9]+)+\b' "$PL" | sort -u); do
+            echo "$ENVBINS" | grep -qx "$fn" && continue                          # أمر يجي من uboot-envtools (fw_printenv / fw_setenv)
+            grep -qE "label = \"${fn}\"" ../out/11-mx2000-decompiled.dts && continue   # اسم قسم MTD موجود بالـ DTS
             grep -qE "\b${fn}=" "$PL" && continue
             grep -qE "^[[:space:]]*(function[[:space:]]+)?${fn}[[:space:]]*\(\)" "$PL" && continue
             grep -rqE "^[[:space:]]*(function[[:space:]]+)?${fn}[[:space:]]*\(\)" package/base-files target/linux/qualcommax target/linux/generic include scripts 2>/dev/null && continue
@@ -682,7 +1095,8 @@ jobs:
           else
             echo "--- identifiers not defined anywhere (with the platform.sh lines using them) ---"
             while read -r fn; do echo "## $fn"; grep -n -w "$fn" "$PL" | head -n 3; done < ../out/16-undefined-upgrade-functions.txt
-            warn "$U identifiers in platform.sh not found as functions/vars: $(tr '\n' ' ' < ../out/16-undefined-upgrade-functions.txt)"
+            USAGE=$(while read -r fn; do printf '%s => %s ;; ' "$fn" "$(grep -m1 -w "$fn" "$PL" | tr -s '[:space:]' ' ')"; done < ../out/16-undefined-upgrade-functions.txt)
+            warn "$U identifiers in platform.sh not found as functions/vars/DTS labels/envtools binaries: $USAGE"
           fi
 
       - name: "17. Verify fixes + risky assumptions (never blocks the firmware upload)"
@@ -720,15 +1134,21 @@ jobs:
           echo "=== FIX 6d: SNAND + ascii-env made it into the final image config ==="
           fx "final kernel .config has SPI_QPIC_SNAND" grep -qE '^CONFIG_SPI_QPIC_SNAND=(y|m)' ../out/13-kernel.config
           fx "final kernel .config has NVMEM_LAYOUT_ASCII_ENV" grep -qE '^CONFIG_NVMEM_LAYOUT_ASCII_ENV=(y|m)' ../out/13-kernel.config
-          fx "11b qpic fix: no props->qpic_v2 left in qcom_nandc.c" sh -c "! grep -rq 'props->qpic_v2' '$TB'/linux-6.6.*/drivers/mtd"
+          KD=$(ls -d $TB/linux-6.6.* | head -n1)
+          grep -rn --include='*.c' --include='*.h' 'props->qpic_v2' "$KD/drivers/mtd" "$KD/drivers/spi" > ../out/17-qpic-v2-sources.txt 2>/dev/null || true
+          grep -rl 'props->qpic_v2' "$KD/drivers/mtd" "$KD/drivers/spi" 2>/dev/null | grep -vE '\.(c|h)$' > ../out/17-qpic-v2-other-files.txt || true
+          fx "11b qpic fix: no props->qpic_v2 left in any .c/.h under drivers/mtd and drivers/spi" test ! -s ../out/17-qpic-v2-sources.txt
+          rk "no stray backup/reject files mention props->qpic_v2 (see 17-qpic-v2-other-files.txt: $(head -n3 ../out/17-qpic-v2-other-files.txt | tr '\n' ' '))" test ! -s ../out/17-qpic-v2-other-files.txt
 
           echo "=== RISK: DTS partition labels vs scripts that use them ==="
           grep -oE 'label = "[^"]+"' $DTS | sed 's/label = //; s/"//g' | sort -u > ../out/17-dts-labels.txt
           rk "DTS has partitions (u_env, devinfo, rootfs)" sh -c "grep -qx u_env ../out/17-dts-labels.txt && grep -qx devinfo ../out/17-dts-labels.txt && grep -qx rootfs ../out/17-dts-labels.txt"
           ENVF=../out/16-uboot-envtools-uci.txt
-          awk '/mx2000/{f=1} f{print} f&&/;;/{exit}' "$ENVF" | grep -oE 'ubootenv_add_mtd[[:space:]]+"[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' | sort -u > ../out/17-envtools-mtds.txt || true
-          rk "uboot-envtools MX2000 block lists MTD names" test -s ../out/17-envtools-mtds.txt
-          while read -r m; do rk "uboot-envtools mtd '$m' is a DTS partition label" grep -qx "$m" ../out/17-dts-labels.txt; done < ../out/17-envtools-mtds.txt
+          awk '/mx2000/{f=1} f{print} f&&/;;/{exit}' "$ENVF" > ../out/17-envtools-mx2000-block.txt
+          echo "--- uboot-envtools block for mx2000 ---"; head -n 15 ../out/17-envtools-mx2000-block.txt
+          grep -oE '"[^"]+"' ../out/17-envtools-mx2000-block.txt | tr -d '"' | grep -E '^[A-Za-z][A-Za-z0-9_:]*$' | sort -u > ../out/17-envtools-mtds.txt || true
+          rk "uboot-envtools MX2000 block found ($(wc -l < ../out/17-envtools-mx2000-block.txt) lines)" test -s ../out/17-envtools-mx2000-block.txt
+          while read -r m; do rk "uboot-envtools name '$m' is a DTS partition label" grep -qx "$m" ../out/17-dts-labels.txt; done < ../out/17-envtools-mtds.txt
           CAL=target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
           awk '/mx2000/{f=1} f{print} f&&/;;/{exit}' $CAL > ../out/17-caldata-mx2000.txt
           cat ../out/17-caldata-mx2000.txt
@@ -737,12 +1157,19 @@ jobs:
 
           echo "=== RISK: every DTS compatible is served by something ==="
           sed 's/\\0/", "/g' $DTS | grep -E '^[[:space:]]*compatible' | grep -oE '"[^"]+"' | tr -d '"' | sort -u > ../out/17-dts-compats.txt
-          grep -vE '^(arm,|syscon$|simple-mfd$|simple-bus$|linksys,|ethernet-phy-id|qcom,ipq5018$|mac-base$)' ../out/17-dts-compats.txt | sed 's/.*/"&"/' | sort -u > /tmp/17-pat.txt
-          # grep واحد لكل المصادر (أسرع بكثير من grep لكل compatible)
+          # كل سطر compatible هو قائمة (الأول خاص بالـ SoC والباقي fallback)، يكفي أن يطابق أحد عناصرها driver
+          sed 's/\\0/", "/g' $DTS | grep -E '^[[:space:]]*compatible' | sort -u > /tmp/17-lines.txt
+          grep -oE '"[^"]+"' /tmp/17-lines.txt | sort -u > /tmp/17-pat.txt
           grep -rhoF -f /tmp/17-pat.txt $TB/linux-6.6.*/drivers $TB/linux-6.6.*/sound $TB/linux-6.6.*/kernel "$SSDK" "$NSS" $TB/mac80211-regular 2>/dev/null | sort -u > /tmp/17-found.txt || true
-          comm -23 /tmp/17-pat.txt /tmp/17-found.txt | tr -d '"' > ../out/17-compats-unresolved.txt
+          : > ../out/17-compats-unresolved.txt
+          while read -r line; do
+            case "$line" in *'"linksys,'*|*'"arm,'*|*ethernet-phy-id*) continue;; esac
+            ok=0
+            for it in $(echo "$line" | grep -oE '"[^"]+"'); do grep -qxF "$it" /tmp/17-found.txt && { ok=1; break; }; done
+            [ "$ok" -eq 1 ] || echo "$line" | grep -oE '"[^"]+"' | tr -d '"' | paste -sd'|' >> ../out/17-compats-unresolved.txt
+          done < /tmp/17-lines.txt
           U=$(wc -l < ../out/17-compats-unresolved.txt)
-          if [ "$U" -eq 0 ]; then pass "RISK-OK: every DTS compatible has a driver string (kernel + qca-ssdk + nss-dp + ath11k)"; else warn "RISK-UNVERIFIED: $U DTS compatibles without any driver string: $(tr '\n' ' ' < ../out/17-compats-unresolved.txt)"; fi
+          if [ "$U" -eq 0 ]; then pass "RISK-OK: every DTS compatible list has at least one driver match (kernel + qca-ssdk + nss-dp + ath11k)"; else warn "RISK-UNVERIFIED: $U DTS compatible lists with NO driver match at all: $(tr '\n' ' ' < ../out/17-compats-unresolved.txt)"; fi
 
           echo "=== RISK: images and packages ==="
           ITB=$(ls $OUT/*linksys_mx2000*initramfs* 2>/dev/null | head -n1)
@@ -774,6 +1201,25 @@ jobs:
             if [ "${KN:-0}" -le 5 ] && [ "${WF:-0}" -le 5 ]; then pass "CACHE-OK: kernel+wifi reused (${KN:-0}m + ${WF:-0}m)"; else warn "CACHE-INEFFECTIVE: kernel/wifi cache restored but kernel ${KN:-?}m / wifi ${WF:-?}m"; fi
           fi
           [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS FIX regression(s) - see summary"; exit 1; }
+
+      - name: "18. Flash readiness: static safety + comparison with the real router (never blocks the upload)"
+        continue-on-error: true
+        run: |
+          source ./ci-lib.sh
+          OUT=openwrt/bin/targets/qualcommax/ipq50xx
+          SYSU=$(ls $OUT/*linksys_mx2000*squashfs-sysupgrade* 2>/dev/null | head -n1)
+          FACT=$(ls $OUT/*linksys_mx2000*squashfs-factory* 2>/dev/null | head -n1)
+          ITB=$(ls $OUT/*linksys_mx2000*initramfs* 2>/dev/null | head -n1)
+          REF=selfrepo/ref
+          if [ -d "$REF" ] && [ -n "$(ls -A $REF 2>/dev/null)" ]; then echo "reference data found: $(ls $REF | tr '\n' ' ')"; else echo "no ref/ directory in your repo yet"; REF=""; fi
+          mkdir -p out/tools && cp compare-mx2000.py mx2000-preflight.sh out/tools/
+          python3 compare-mx2000.py --built-dts out/11-mx2000-decompiled.dts --ref-dir "$REF" \
+            --sysupgrade "$SYSU" --factory "$FACT" --itb "$ITB" --tree openwrt \
+            --envtools-block out/16-uboot-envtools-uci.txt --mkimage openwrt/staging_dir/host/bin/mkimage \
+            --report out/18-flash-readiness.md --summary "$SUMMARY" | tee out/18-flash-readiness.log
+          RC=${PIPESTATUS[0]}
+          grep -E '^\[(CRIT|WARN)\]' out/18-flash-readiness.log | head -n 60 | while read -r l; do echo "::warning::$l"; done
+          exit $RC
 
       # ------------------------------------------------------------------
       - name: "Summary"
