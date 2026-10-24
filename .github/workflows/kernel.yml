@@ -231,37 +231,26 @@ jobs:
           check "931 patch no longer uses undeclared addr" sh -c "! grep -qE '&addr\)' package/kernel/mac80211/patches/ath11k/931-*m3-dump*.patch"
           git add -A && git commit -q -m "fix 931 m3-dump patch: declare its own variable"
 
-      - name: "6c. qca-ssdk: add ipq50xx (MP) support from main (7bffb469bc)"
+      - name: "6c. qca-ssdk + qca-nss-dp: take the ipq50xx-capable versions from BASE"
         run: |
           source ./ci-lib.sh
           cd openwrt
-          SSDK_COMMIT=7bffb469bc
-          check "ssdk commit $SSDK_COMMIT is in the clone" git cat-file -e "$SSDK_COMMIT^{commit}"
-          git format-patch -1 --stdout "$SSDK_COMMIT" -- package/kernel/qca-ssdk > /tmp/ssdk.patch
-          if git am -3 /tmp/ssdk.patch; then
-            pass "applied qca-ssdk ipq50xx commit with git am"
-          else
-            git am --abort || true
-            warn "git am failed; falling back to manual Makefile edit + patch files"
-            git checkout "$SSDK_COMMIT" -- package/kernel/qca-ssdk/patches
-            python3 - <<'PYSSDK'
-          p = 'package/kernel/qca-ssdk/Makefile'
-          s = open(p).read()
-          if 'IN_MP_PHY' not in s:
-              assert 'IN_MALIBU_PHY=FALSE \\\n' in s, 'IN_MALIBU_PHY anchor not found'
-              s = s.replace('IN_MALIBU_PHY=FALSE \\\n', 'IN_MALIBU_PHY=FALSE IN_MP_PHY=FALSE \\\n', 1)
-          if 'CHIP_TYPE=MP' not in s:
-              assert 'define Build/Compile' in s, 'Build/Compile anchor not found'
-              s = s.replace('define Build/Compile', 'ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq50xx")\n  MAKE_FLAGS+= CHIP_TYPE=MP\nendif\n\ndefine Build/Compile', 1)
-          open(p, 'w').write(s)
-          PYSSDK
-            git add -A && git commit -q -m "qca-ssdk: ipq50xx support (manual)"
-          fi
-          D=package/kernel/qca-ssdk
-          check "ssdk Makefile sets CHIP_TYPE=MP for ipq50xx" grep -q 'CHIP_TYPE=MP' $D/Makefile
-          check "ssdk Makefile sets IN_MP_PHY=FALSE" grep -q 'IN_MP_PHY=FALSE' $D/Makefile
-          check "ssdk patch 121 (MP build fix) present" test -f $D/patches/121-MP-fix-build-issues.patch
-          check "ssdk patches 111/112/122 present" sh -c "test -f $D/patches/111-*.patch && test -f $D/patches/112-*.patch && test -f $D/patches/122-*.patch"
+          # 24.10 ما بيه دعم ipq50xx بهاي الحزم (Makefile بدون CHIP_TYPE=MP، و nss-dp بدون إصلاح qcom_scm وغيره).
+          # BASE يستخدم نفس الكيرنل 6.6، فنسحب الحزمتين كاملتين (Makefile + patches) حتى تبقى النسخ متوافقة مع بعض.
+          for pkg in qca-ssdk qca-nss-dp; do
+            D=$(git ls-tree -r --name-only "$BASE" -- package/kernel | grep -E "/$pkg/Makefile$" | head -n1 | xargs -r dirname)
+            check "$pkg exists in BASE (got: $D)" test -n "$D"
+            echo "== $pkg: 24.10 vs BASE (diffstat) =="
+            git diff --stat "$TAG" "$BASE" -- "package/kernel/$pkg" | tail -n 15 || true
+            git rm -r -q --ignore-unmatch "package/kernel/$pkg"
+            git checkout "$BASE" -- "$D"
+            if [ "$D" != "package/kernel/$pkg" ]; then mkdir -p package/kernel && git mv "$D" "package/kernel/$pkg"; fi
+            grep -E '^PKG_(SOURCE_DATE|SOURCE_VERSION|VERSION|RELEASE)' "package/kernel/$pkg/Makefile" | tee -a ../out/06c-versions.txt
+          done
+          D=package/kernel
+          check "qca-ssdk Makefile sets CHIP_TYPE=MP for ipq50xx" grep -q 'CHIP_TYPE=MP' $D/qca-ssdk/Makefile
+          soft "qca-nss-dp has the qcom_scm fix for ipq50xx" sh -c "grep -rqE 'qcom_scm_io_writel|firmware/qcom/qcom_scm' $D/qca-nss-dp/patches $D/qca-nss-dp/Makefile"
+          git add -A && git commit -q -m "qca-ssdk, qca-nss-dp: versions from BASE (ipq50xx support)"
 
       - name: "7. Fix kernel patches for 6.6.144 (with asserts)"
         run: |
@@ -650,3 +639,4 @@ jobs:
             openwrt/bin/targets/qualcommax/ipq50xx/*linksys_mx2000*
             openwrt/bin/targets/qualcommax/ipq50xx/sha256sums
           if-no-files-found: error
+          
