@@ -260,7 +260,7 @@ jobs:
           #  - SNAND: بدونه الكيرنل ما يشوف الـ NAND (qcom,ipq9574-snand)
           #  - ascii-env: الـ DTS يجيب MAC الإيثرنت من قسم devinfo بهذا الـ layout
           # كل باتشات هذي الميزتين بملفات generic بالـ BASE، فننسخها كما هي (ونحذف النسخ القديمة المتبدلة الاسم).
-          RX='(qpic|snand|rawnand-qcom|nand-qcom|ascii-env|nvmem-core-generalize-mac-base)'
+          RX='(qpic|snand|rawnand-qcom|nand-qcom|ascii-env|nvmem-core-generalize-mac-base|mtk-bmt)'  # mtk-bmt: باتش hack يعدّل نفس Makefile حق mtd/nand، لازم نسخته تطابق ترتيب الباتشات بالـ BASE
           N=0
           for k in backport pending hack; do
             d="target/linux/generic/$k-6.6"
@@ -310,7 +310,7 @@ jobs:
           check "0116 no longer touches MAX_HALT_REG" sh -c "! grep -q 'MAX_HALT_REG' $P16"
           cd "$GITHUB_WORKSPACE/openwrt" && git add -A && git commit -q -m "fix 0113/0116 for kernel 6.6.144"
 
-      # ------------------------------------------------------------------
+      # -------------------------------------------------------------------
       - name: "8. Feeds"
         run: |
           source ./ci-lib.sh
@@ -789,3 +789,4 @@ jobs:
             openwrt/bin/targets/qualcommax/ipq50xx/*linksys_mx2000*
             openwrt/bin/targets/qualcommax/ipq50xx/sha256sums
           if-no-files-found: error
+          
