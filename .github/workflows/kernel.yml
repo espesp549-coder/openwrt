@@ -252,6 +252,35 @@ jobs:
           soft "qca-nss-dp has the qcom_scm fix for ipq50xx" sh -c "grep -rqE 'qcom_scm_io_writel|firmware/qcom/qcom_scm' $D/qca-nss-dp/patches $D/qca-nss-dp/Makefile"
           git add -A && git commit -q -m "qca-ssdk, qca-nss-dp: versions from BASE (ipq50xx support)"
 
+      - name: "6d. Sync QPIC SPI-NAND + NVMEM ascii-env generic patches from BASE"
+        run: |
+          source ./ci-lib.sh
+          cd openwrt
+          # التقرير بين إن CONFIG_SPI_QPIC_SNAND و CONFIG_NVMEM_LAYOUT_ASCII_ENV غير معرّفين بالكيرنل:
+          #  - SNAND: بدونه الكيرنل ما يشوف الـ NAND (qcom,ipq9574-snand)
+          #  - ascii-env: الـ DTS يجيب MAC الإيثرنت من قسم devinfo بهذا الـ layout
+          # كل باتشات هذي الميزتين بملفات generic بالـ BASE، فننسخها كما هي (ونحذف النسخ القديمة المتبدلة الاسم).
+          RX='(qpic|snand|rawnand-qcom|nand-qcom|ascii-env|nvmem-core-generalize-mac-base)'
+          N=0
+          for k in backport pending hack; do
+            d="target/linux/generic/$k-6.6"
+            git ls-tree -r --name-only "$BASE" -- "$d/" | grep -iE "/[^/]*$RX[^/]*\.patch$" > /tmp/base-$k.txt || true
+            git ls-files -- "$d/" | grep -iE "/[^/]*$RX[^/]*\.patch$" > /tmp/ours-$k.txt || true
+            # ملفات عندنا مو موجودة بالـ BASE (انحذفت/تغيّر اسمها) -> نحذفها
+            comm -13 <(sort /tmp/base-$k.txt) <(sort /tmp/ours-$k.txt) | while read -r f; do git rm -q -f "$f"; echo "removed (not in BASE): $f"; done
+            while read -r f; do
+              mkdir -p "$(dirname "$f")"
+              git show "$BASE:$f" > "$f"
+              N=$((N+1))
+            done < /tmp/base-$k.txt
+          done
+          git add -A
+          git diff --cached --stat | tail -n 40 | tee ../out/06d-generic-sync.txt
+          check "synced at least 8 qpic/nvmem generic patches (got $N)" test "$N" -ge 8
+          check "SNAND driver patch present" sh -c "ls target/linux/generic/*-6.6/ | grep -qiE 'spi-qpic.*(add-driver|driver)'"
+          check "ascii-env layout patch present" sh -c "ls target/linux/generic/pending-6.6/ | grep -qi 'ascii-env'"
+          git -c core.hooksPath=/dev/null commit -q -m "generic: sync QPIC SPI-NAND and NVMEM ascii-env patches from BASE" || true
+
       - name: "7. Fix kernel patches for 6.6.144 (with asserts)"
         run: |
           source ./ci-lib.sh
@@ -350,7 +379,9 @@ jobs:
       - name: "10. Host tools"
         run: |
           cd openwrt
+          T0=$(date +%s)
           make -j"$(nproc)" tools/install > ../out/10-tools.log 2>&1 || { tail -n 60 ../out/10-tools.log; exit 1; }
+          echo $(( $(date +%s) - T0 )) > ../out/10-tools-seconds.txt
 
       # ------------------------------------------------------------------
       - name: "11. Kernel patches + DTS compile + driver check (fast)"
@@ -363,6 +394,12 @@ jobs:
           check "kernel dir found ($KDIR)" test -d "$KDIR"
           DTS="$KDIR/arch/arm64/boot/dts/qcom/ipq5018-mx2000.dts"
           check "MX2000 dts copied into kernel tree" test -f "$DTS"
+          check "kernel has SPI_QPIC_SNAND driver (spi-qpic-snand.c + Kconfig)" sh -c "test -f '$KDIR/drivers/spi/spi-qpic-snand.c' && grep -q 'config SPI_QPIC_SNAND' '$KDIR/drivers/spi/Kconfig'"
+          check "kernel has NVMEM ascii-env layout" sh -c "grep -q 'config NVMEM_LAYOUT_ASCII_ENV' '$KDIR/drivers/nvmem/layouts/Kconfig'"
+          # RISK: سلسلة الـ MAC كاملة (devinfo -> ascii-env layout -> mac-base cell -> gmac)
+          check "nvmem core knows 'mac-base' cells (needed by hw_mac_addr)" grep -q 'mac-base' "$KDIR/drivers/nvmem/core.c"
+          check "ascii-env layout driver matches ascii-eq-delim-env" grep -rq 'ascii-eq-delim-env' "$KDIR/drivers/nvmem/layouts"
+          check "spi-qpic-snand matches qcom,ipq9574-snand (DTS fallback compatible)" grep -q 'qcom,ipq9574-snand' "$KDIR/drivers/spi/spi-qpic-snand.c"
 
           cpp -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
             -I "$KDIR/arch/arm64/boot/dts" -I "$KDIR/arch/arm64/boot/dts/qcom" \
@@ -379,10 +416,11 @@ jobs:
           soft "ath11k calibration variant present" grep -q 'calibration-variant' ../out/11-mx2000-decompiled.dts
 
           # كل compatible بالـDTS لازم يكون له driver بالنواة (بعد تطبيق الباتشات)
-          grep -E '^[[:space:]]*compatible' ../out/11-mx2000-decompiled.dts | grep -oE '"[^"]+"' | sort -u > /tmp/compats.txt
+          grep -E '^[[:space:]]*compatible' ../out/11-mx2000-decompiled.dts | sed 's/\\0/", "/g' | grep -oE '"[^"]+"' | sort -u > /tmp/compats.txt
           grep -rhoF -f /tmp/compats.txt "$KDIR/drivers" "$KDIR/sound" "$KDIR/kernel" 2>/dev/null | sort -u > /tmp/found.txt
           comm -23 /tmp/compats.txt /tmp/found.txt > ../out/11-compatibles-without-driver.txt
-          M=$(grep -vc -E '"linksys,|"qcom,ipq5018"$' ../out/11-compatibles-without-driver.txt || true)
+          # هذي تتوفر من modules خارجية (qca-ssdk / nss-dp / ath11k) ويتحقق منها الخطوة 17
+          M=$(grep -vc -E '"linksys,|"qcom,ipq5018"$|"qcom,ess-switch-ipq50xx"|"qcom,ess-uniphy"|"qcom,nss-dp|"qcom,qcn6122-wifi"|"ethernet-phy-id|"arm,cortex-a53"|"syscon"|"simple-mfd"' ../out/11-compatibles-without-driver.txt || true)
           if [ "$M" -eq 0 ]; then pass "every DTS compatible has a driver string in the kernel"
           else warn "$M DTS compatibles have no driver string (see 11-compatibles-without-driver.txt)"; fi
 
@@ -474,6 +512,18 @@ jobs:
           KCFG=$(ls build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.6.*/.config | head -n1)
           check "kernel .config found" test -f "$KCFG"
           cp "$KCFG" ../out/13-kernel.config
+          check "CONFIG_SPI_QPIC_SNAND enabled in final kernel config" grep -qE '^CONFIG_SPI_QPIC_SNAND=(y|m)' "$KCFG"
+          check "CONFIG_NVMEM_LAYOUT_ASCII_ENV enabled in final kernel config" grep -qE '^CONFIG_NVMEM_LAYOUT_ASCII_ENV=(y|m)' "$KCFG"
+          # رموز لازمة لإقلاع الجهاز (console، NAND، UBI، pinctrl، clocks، SCM)
+          for sym in SERIAL_MSM SERIAL_MSM_CONSOLE QCOM_SCM MTD_UBI PINCTRL_IPQ5018 IPQ_GCC_5018; do
+            check "kernel config: CONFIG_$sym enabled" grep -qE "^CONFIG_${sym}=(y|m)" "$KCFG"
+          done
+          for sym in MTD_SPI_NAND IPQ5018_PHY MFD_SYSCON USB_DWC3_QCOM PHY_QCOM_M31_USB PWM_IPQ IPQ_APSS_5018 QCOM_APCS_IPC; do
+            soft "kernel config: CONFIG_$sym enabled" grep -qE "^CONFIG_${sym}=(y|m)" "$KCFG"
+          done
+          VML=$(find build_dir -name vmlinux -path '*linux-6.6*' 2>/dev/null | head -n1)
+          soft "SNAND driver is in the kernel (built-in string or module)" sh -c "strings -a '$VML' 2>/dev/null | grep -q 'qcom,ipq9574-snand' || find build_dir -name 'spi-qpic-snand.ko' | grep -q ."
+          soft "ascii-env layout is in the kernel (built-in string or module)" sh -c "strings -a '$VML' 2>/dev/null | grep -q 'ascii-eq-delim-env' || find build_dir -name 'ascii-env.ko' | grep -q ."
 
           verify_cfg() {   # $1 = file, $2 = label; returns number of mismatches
             local f="$1" tag="$2" miss=0 l sym
@@ -528,6 +578,12 @@ jobs:
           KO=$(find build_dir -name 'ath11k_ahb.ko' | head -n1)
           check "ath11k_ahb.ko was built" test -n "$KO"
           check "ath11k_ahb.ko contains QCN6122 support" sh -c "strings -a '$KO' | grep -qi qcn6122"
+          QMI=$(find build_dir -path '*backports*' -path '*ath11k/qmi.c' | head -n1)
+          check "ath11k qmi.c found" test -n "$QMI"
+          check "FIX 6b kept: qmi.c m3-dump code declares its own variable" grep -q 'm3_dump_addr' "$QMI"
+          soft "ath11k_ahb.ko matches DTS compatible qcom,qcn6122-wifi" sh -c "strings -a '$KO' | grep -q 'qcom,qcn6122-wifi'"
+          soft "ath11k_ahb.ko matches DTS compatible qcom,ipq5018-wifi" sh -c "strings -a '$KO' | grep -q 'qcom,ipq5018-wifi'"
+          soft "ath11k reads qcom,m3-dump-addr from DT" sh -c "find build_dir -name 'ath11k.ko' | head -n1 | xargs strings -a | grep -q 'qcom,m3-dump-addr'"
           check "ipq-wifi MX2000 package built" test -n "$(find bin -name 'ipq-wifi-linksys_mx2000_*.ipk' | head -n1)"
           soft "ath11k firmware packages built" test -n "$(find bin -name 'ath11k-firmware-*.ipk' | head -n1)"
 
@@ -610,7 +666,101 @@ jobs:
           done > ../out/16-undefined-upgrade-functions.txt
           U=$(wc -l < ../out/16-undefined-upgrade-functions.txt)
           if [ "$U" -eq 0 ]; then pass "no undefined helper in sysupgrade platform.sh"
-          else warn "$U identifiers in platform.sh not found as functions/vars (16-undefined-upgrade-functions.txt)"; fi
+          else
+            echo "--- identifiers not defined anywhere (with the platform.sh lines using them) ---"
+            while read -r fn; do echo "## $fn"; grep -n -w "$fn" "$PL" | head -n 3; done < ../out/16-undefined-upgrade-functions.txt
+            warn "$U identifiers in platform.sh not found as functions/vars: $(tr '\n' ' ' < ../out/16-undefined-upgrade-functions.txt)"
+          fi
+
+      - name: "17. Verify fixes + risky assumptions (never blocks the firmware upload)"
+        continue-on-error: true
+        env:
+          CACHE_A_HIT: ${{ steps.cacheA.outputs.cache-hit }}
+          CACHE_B_MATCH: ${{ steps.cacheB.outputs.cache-matched-key }}
+        run: |
+          source ./ci-lib.sh
+          cd openwrt
+          FAILS=0
+          # fx = تصليح سويناه: لو انكسر نعتبره regression (خطأ). rk = افتراض مو متأكد منه: تحذير فقط.
+          fx() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then pass "FIX-VERIFY: $d"; else echo "- **FAIL** FIX-VERIFY: $d" >> "$SUMMARY"; echo "::error::FIX regression: $d"; FAILS=$((FAILS+1)); fi; }
+          rk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then pass "RISK-OK: $d"; else warn "RISK-UNVERIFIED: $d"; fi; }
+          TB=$(ls -d build_dir/target-*/linux-qualcommax_ipq50xx | head -n1)
+          DTS=../out/11-mx2000-decompiled.dts
+          OUT=bin/targets/qualcommax/ipq50xx
+
+          echo "=== FIX 6c: qca-ssdk (MP / ipq50xx) ==="
+          SSDK=$(ls -d $TB/qca-ssdk-* 2>/dev/null | head -n1)
+          fx "qca-ssdk build dir found" test -n "$SSDK"
+          fx "qca-ssdk compiled the MP (ipq50xx) code" test -n "$(find "$SSDK" -name 'adpt_mp_*.o' 2>/dev/null | head -n1)"
+          rk "qca-ssdk skipped unrelated HPPE code (CHIP_TYPE=MP took effect)" test -z "$(find "$SSDK" -name 'adpt_hppe_*.o' 2>/dev/null | head -n1)"
+          rk "qca-ssdk source has the DTS compatibles (ess-switch-ipq50xx, ess-uniphy)" sh -c "grep -rq 'qcom,ess-switch-ipq50xx' '$SSDK' && grep -rq 'qcom,ess-uniphy' '$SSDK'"
+
+          echo "=== FIX 6c: qca-nss-dp ==="
+          NSS=$(ls -d $TB/qca-nss-dp-* 2>/dev/null | head -n1)
+          fx "nss-dp build dir found" test -n "$NSS"
+          fx "nss-dp ipq50xx soc_ops compiled" test -n "$(find "$NSS/hal/soc_ops/ipq50xx" -name '*.o' 2>/dev/null | head -n1)"
+          fx "nss-dp ipq50xx no longer includes the old <linux/qcom_scm.h>" sh -c "! grep -q 'include <linux/qcom_scm.h>' '$NSS/hal/soc_ops/ipq50xx/nss_ipq50xx.c'"
+          rk "nss-dp matches DTS compatibles (qcom,nss-dp, qcom,nss-dp-common)" sh -c "grep -rq 'qcom,nss-dp' '$NSS' --include=*.c"
+          rk "nss-dp supports fixed-link (the MX2000 DTS gmac uses it)" sh -c "grep -rq 'fixed-link' '$NSS' --include=*.c"
+          rk "nss-dp reads phy-handle" sh -c "grep -rq 'phy-handle' '$NSS' --include=*.c"
+
+          echo "=== FIX 6d: SNAND + ascii-env made it into the final image config ==="
+          fx "final kernel .config has SPI_QPIC_SNAND" grep -qE '^CONFIG_SPI_QPIC_SNAND=(y|m)' ../out/13-kernel.config
+          fx "final kernel .config has NVMEM_LAYOUT_ASCII_ENV" grep -qE '^CONFIG_NVMEM_LAYOUT_ASCII_ENV=(y|m)' ../out/13-kernel.config
+          fx "11b qpic fix: no props->qpic_v2 left in qcom_nandc.c" sh -c "! grep -rq 'props->qpic_v2' '$TB'/linux-6.6.*/drivers/mtd"
+
+          echo "=== RISK: DTS partition labels vs scripts that use them ==="
+          grep -oE 'label = "[^"]+"' $DTS | sed 's/label = //; s/"//g' | sort -u > ../out/17-dts-labels.txt
+          rk "DTS has partitions (u_env, devinfo, rootfs)" sh -c "grep -qx u_env ../out/17-dts-labels.txt && grep -qx devinfo ../out/17-dts-labels.txt && grep -qx rootfs ../out/17-dts-labels.txt"
+          ENVF=../out/16-uboot-envtools-uci.txt
+          awk '/mx2000/{f=1} f{print} f&&/;;/{exit}' "$ENVF" | grep -oE 'ubootenv_add_mtd[[:space:]]+"[^"]+"' | grep -oE '"[^"]+"' | tr -d '"' | sort -u > ../out/17-envtools-mtds.txt || true
+          rk "uboot-envtools MX2000 block lists MTD names" test -s ../out/17-envtools-mtds.txt
+          while read -r m; do rk "uboot-envtools mtd '$m' is a DTS partition label" grep -qx "$m" ../out/17-dts-labels.txt; done < ../out/17-envtools-mtds.txt
+          CAL=target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+          awk '/mx2000/{f=1} f{print} f&&/;;/{exit}' $CAL > ../out/17-caldata-mx2000.txt
+          cat ../out/17-caldata-mx2000.txt
+          CALMTD=$(grep -oE '"[^"]+"' ../out/17-caldata-mx2000.txt | tr -d '"' | head -n1)
+          rk "caldata MX2000 reads from a partition that exists in the DTS (got: ${CALMTD:-none})" sh -c "test -n '$CALMTD' && grep -qx '$CALMTD' ../out/17-dts-labels.txt"
+
+          echo "=== RISK: every DTS compatible is served by something ==="
+          sed 's/\\0/", "/g' $DTS | grep -E '^[[:space:]]*compatible' | grep -oE '"[^"]+"' | tr -d '"' | sort -u > ../out/17-dts-compats.txt
+          grep -vE '^(arm,|syscon$|simple-mfd$|simple-bus$|linksys,|ethernet-phy-id|qcom,ipq5018$|mac-base$)' ../out/17-dts-compats.txt | sed 's/.*/"&"/' | sort -u > /tmp/17-pat.txt
+          # grep واحد لكل المصادر (أسرع بكثير من grep لكل compatible)
+          grep -rhoF -f /tmp/17-pat.txt $TB/linux-6.6.*/drivers $TB/linux-6.6.*/sound $TB/linux-6.6.*/kernel "$SSDK" "$NSS" $TB/mac80211-regular 2>/dev/null | sort -u > /tmp/17-found.txt || true
+          comm -23 /tmp/17-pat.txt /tmp/17-found.txt | tr -d '"' > ../out/17-compats-unresolved.txt
+          U=$(wc -l < ../out/17-compats-unresolved.txt)
+          if [ "$U" -eq 0 ]; then pass "RISK-OK: every DTS compatible has a driver string (kernel + qca-ssdk + nss-dp + ath11k)"; else warn "RISK-UNVERIFIED: $U DTS compatibles without any driver string: $(tr '\n' ' ' < ../out/17-compats-unresolved.txt)"; fi
+
+          echo "=== RISK: images and packages ==="
+          ITB=$(ls $OUT/*linksys_mx2000*initramfs* 2>/dev/null | head -n1)
+          SYSU=$(ls $OUT/*linksys_mx2000*squashfs-sysupgrade* 2>/dev/null | head -n1)
+          dtc -I dtb -O dts "$ITB" > ../out/17-itb.dts 2>/dev/null || true
+          grep -E 'description|load =|entry =|compression|arch =|os =|type =' ../out/17-itb.dts | head -n 30 | tee ../out/17-itb-summary.txt
+          rk "initramfs FIT is parseable" test -s ../out/17-itb.dts
+          rk "initramfs FIT references mx2000" grep -qi 'mx2000' ../out/17-itb.dts
+          rk "initramfs FIT has load/entry addresses" grep -qE 'load = |entry = ' ../out/17-itb.dts
+          rk "sysupgrade metadata names linksys,mx2000 (otherwise sysupgrade refuses the image)" sh -c "strings -a '$SYSU' | grep -q 'linksys,mx2000'"
+          rk "profiles.json lists linksys,mx2000" grep -q 'linksys,mx2000' $OUT/profiles.json
+          for pat in 'ipq-wifi-linksys_mx2000_*.ipk' 'ath11k-firmware-qcn6122_*.ipk' 'ath11k-firmware-ipq5018_*.ipk'; do
+            P=$(find bin -name "$pat" | head -n1)
+            N=$(basename "${P:-none}" | cut -d_ -f1)
+            if [ -n "$P" ]; then tar -xzOf "$P" ./data.tar.gz | tar -tzv > "../out/17-ipk-$N.txt" 2>/dev/null || true; fi
+          done
+          rk "ipq-wifi MX2000 ships a board file" sh -c "grep -qiE 'board.*\.bin|\.bin' ../out/17-ipk-ipq-wifi-linksys.txt"
+          rk "QCN6122 firmware ships q6/m3 files" sh -c "grep -qiE 'q6|m3|qcn6122' ../out/17-ipk-ath11k-firmware-qcn6122.txt"
+
+          echo "=== CACHE effectiveness ==="
+          stage_min() { grep -E "STAGE $1\*\*" "$SUMMARY" | grep -oE '[0-9]+ min' | grep -oE '[0-9]+' | head -n1; }
+          TC=$(stage_min toolchain); KN=$(stage_min kernel); WF=$(stage_min wifi)
+          HT=$(( $(cat ../out/10-tools-seconds.txt 2>/dev/null || echo 0) / 60 ))
+          echo "host tools ${HT}m | toolchain ${TC:-?}m | kernel ${KN:-?}m | wifi ${WF:-?}m | cacheA=${CACHE_A_HIT:-none} | cacheB=${CACHE_B_MATCH:-none}"
+          if [ "$CACHE_A_HIT" = "true" ]; then
+            if [ "$HT" -le 5 ] && [ "${TC:-0}" -le 8 ]; then pass "CACHE-OK: tools+toolchain reused (${HT}m + ${TC:-0}m)"; else warn "CACHE-INEFFECTIVE: base cache restored but host tools took ${HT}m / toolchain ${TC:-?}m (stamps invalid?)"; fi
+          fi
+          if [ -n "$CACHE_B_MATCH" ]; then
+            if [ "${KN:-0}" -le 5 ] && [ "${WF:-0}" -le 5 ]; then pass "CACHE-OK: kernel+wifi reused (${KN:-0}m + ${WF:-0}m)"; else warn "CACHE-INEFFECTIVE: kernel/wifi cache restored but kernel ${KN:-?}m / wifi ${WF:-?}m"; fi
+          fi
+          [ "$FAILS" -eq 0 ] || { echo "::error::$FAILS FIX regression(s) - see summary"; exit 1; }
 
       # ------------------------------------------------------------------
       - name: "Summary"
@@ -639,4 +789,3 @@ jobs:
             openwrt/bin/targets/qualcommax/ipq50xx/*linksys_mx2000*
             openwrt/bin/targets/qualcommax/ipq50xx/sha256sums
           if-no-files-found: error
-          
