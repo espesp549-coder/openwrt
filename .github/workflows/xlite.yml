@@ -1,0 +1,3238 @@
+name: XLite release
+
+# Builds XLite (the light v2rayA replacement) and publishes it as the release "xlite" of this repo.
+# On any OpenWrt 22.03+ router:  wget -O- https://github.com/<this repo>/releases/download/xlite/install.sh | sh
+# Every file of the tool is inside this workflow: the repo needs nothing else.
+
+on:
+  workflow_dispatch:
+    inputs:
+      zero_copy:
+        description: 'Core with the zero-copy download for VLESS over TCP (patch 900): tested on the runner first, left out by itself if a test fails'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  XRAY_VERSION: 25.1.30
+  XRAY_HASH: 983ee395f085ed1b7fbe0152cb56a5b605a6f70a5645d427c7186c476f14894e
+  GO_VERSION: 1.23.12
+  RELEASE_TAG: xlite
+  LIBUBOX_REV: da2d205a5cf3e877c45a2eec488218cbaf452e7d
+  UCI_REV: 74f6277aabffc943d026f406df57c22595134c42
+  UCODE_REV: aabdeb4f5060c91c5929bf6d7af745c6aabf5ec5
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: "1. XLite files"
+        run: |
+          mkdir -p out
+          echo "# XLite build ${{ github.run_number }}" > out/summary.md
+          mkdir -p "$(dirname "src/etc/hotplug.d/iface/90-xlite")"
+          cat > "src/etc/hotplug.d/iface/90-xlite" <<'XLITE_FILE_0'
+          # XLite: keep the set of the router's own addresses current (they never go through the proxy)
+          case "$ACTION" in ifup|ifupdate) [ -x /usr/bin/xlite ] && /usr/bin/xlite refresh_ips ;; esac
+          XLITE_FILE_0
+          mkdir -p "$(dirname "src/etc/init.d/xlite")"
+          cat > "src/etc/init.d/xlite" <<'XLITE_FILE_1'
+          #!/bin/sh /etc/rc.common
+          # XLite: transparent proxy (xray core + nftables tproxy)
+          START=99
+          STOP=10
+          USE_PROCD=1
+
+          start_service() {
+          	local enabled core kv
+          	config_load xlite
+          	config_get_bool enabled main enabled 0
+          	if [ "$enabled" != 1 ]; then
+          		/usr/bin/xlite rules_down
+          		return 0
+          	fi
+          	/usr/bin/xlite stop_v2raya
+          	if ! /usr/bin/xlite prepare; then
+          		logger -t xlite "not started: no valid server (add one in LuCI: Services > XLite)"
+          		return 1
+          	fi
+          	if ! core=$(/usr/bin/xlite core); then
+          		logger -t xlite "not started: the core (xray) is missing, run: xlite update"
+          		return 1
+          	fi
+          	/usr/bin/xlite sysctl
+          	procd_open_instance xray
+          	procd_set_param command "$core" run -c /var/etc/xlite/config.json
+          	procd_set_param env XRAY_LOCATION_ASSET=/usr/share/xray
+          	for kv in $(cat /var/etc/xlite/env); do
+          		[ -n "${kv#*=}" ] && procd_append_param env "$kv"
+          	done
+          	procd_set_param limits nofile="65535 65535"
+          	procd_set_param respawn 3600 5 0
+          	procd_set_param stdout 1
+          	procd_set_param stderr 1
+          	procd_close_instance
+          	( /usr/bin/xlite rules_when_ready > /dev/null 2>&1 & )
+          }
+
+          stop_service() {
+          	/usr/bin/xlite rules_down
+          }
+
+          reload_service() {
+          	stop
+          	start
+          }
+
+          service_triggers() {
+          	procd_add_reload_trigger "xlite"
+          }
+          XLITE_FILE_1
+          chmod 755 "src/etc/init.d/xlite"
+          mkdir -p "$(dirname "src/usr/bin/xlite")"
+          cat > "src/usr/bin/xlite" <<'XLITE_FILE_2'
+          #!/bin/sh
+          # XLite: a light transparent proxy for OpenWrt (xray core + nftables tproxy), managed from LuCI.
+          #   xlite start|stop|restart        the proxy (same as /etc/init.d/xlite ...)
+          #   xlite status                    is it running, which server, which core
+          #   xlite add                       share links on stdin (vless://, vmess://, trojan://, ss://)
+          #   xlite ping <server-id>          TCP connect time to a server in ms (-1 = no answer)
+          #   xlite update                    install the newest version (settings and servers are kept)
+          #   xlite uninstall                 remove XLite (v2rayA is enabled again if it is installed)
+          SHARE=/usr/share/xlite
+          RUN=/var/etc/xlite
+          UC="ucode -L /usr/share/ucode $SHARE/gen.uc"
+          TABLE=100
+          [ -f $SHARE/release ] && . $SHARE/release   # REPO=owner/name TAG=xlite VERSION=...
+
+          log() { logger -t xlite "$*"; }
+
+          core_path() {
+          	local c
+          	c=$(uci -q get xlite.main.core)
+          	[ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
+          	for c in $SHARE/bin/xray /usr/bin/xray /tmp/xlite-core/xray; do
+          		[ -x "$c" ] && { echo "$c"; return 0; }
+          	done
+          	# small flash: the core is kept compressed and unpacked to RAM at start
+          	if [ -s $SHARE/bin/xray.gz ]; then
+          		mkdir -p /tmp/xlite-core && gzip -dc $SHARE/bin/xray.gz > /tmp/xlite-core/xray.new && chmod 755 /tmp/xlite-core/xray.new &&
+          			mv /tmp/xlite-core/xray.new /tmp/xlite-core/xray && { echo /tmp/xlite-core/xray; return 0; }
+          	fi
+          	return 1
+          }
+
+          ipv6_rules() { grep -q 'tproxy ip6' $RUN/rules.nft 2>/dev/null; }
+
+          rules_down() {
+          	nft delete table inet xlite 2>/dev/null
+          	nft delete table inet xlite_nat 2>/dev/null
+          	while ip rule del fwmark 0x40/0xc0 table $TABLE 2>/dev/null; do :; done
+          	ip route flush table $TABLE 2>/dev/null
+          	while ip -6 rule del fwmark 0x40/0xc0 table $TABLE 2>/dev/null; do :; done
+          	ip -6 route flush table $TABLE 2>/dev/null
+          	return 0
+          }
+
+          rules_up() {
+          	[ -s $RUN/rules.nft ] || return 0
+          	rules_down
+          	if ! nft -f $RUN/rules.nft; then
+          		log "nft rules failed to load (see: nft -c -f $RUN/rules.nft)"
+          		return 1
+          	fi
+          	if [ -s $RUN/redirect.nft ]; then
+          		nft -f $RUN/redirect.nft || { log "redirect rules failed"; rules_down; return 1; }
+          	else
+          		ip rule add fwmark 0x40/0xc0 table $TABLE
+          		ip route add local 0.0.0.0/0 dev lo table $TABLE
+          		if ipv6_rules; then
+          			ip -6 rule add fwmark 0x40/0xc0 table $TABLE
+          			ip -6 route add local ::/0 dev lo table $TABLE
+          		fi
+          	fi
+          	return 0
+          }
+
+          # wait until the core listens, then send the traffic to it
+          rules_when_ready() {
+          	local port i=0
+          	port=$(uci -q get xlite.main.tproxy_port); port=${port:-52345}
+          	while [ $i -lt 40 ]; do
+          		if netstat -ltn 2>/dev/null | grep -q "[:.]$port "; then
+          			rules_up && log "running"
+          			return
+          		fi
+          		i=$((i + 1)); sleep 0.25
+          	done
+          	log "the core did not start listening on port $port: rules not applied (logread -e xray)"
+          }
+
+          sysctl_apply() {
+          	local cc fw
+          	cc=$(uci -q get xlite.main.tcp_cc)
+          	[ -n "$cc" ] && sysctl -q -w net.ipv4.tcp_congestion_control="$cc" > /dev/null 2>&1
+          	fw=$(uci -q get xlite.main.ip_forward)
+          	[ "$fw" = 1 ] && sysctl -q -w net.ipv4.ip_forward=1 > /dev/null 2>&1
+          	return 0
+          }
+
+          stop_v2raya() {
+          	[ -x /etc/init.d/v2raya ] || return 0
+          	if /etc/init.d/v2raya enabled 2>/dev/null || pidof v2raya > /dev/null; then
+          		/etc/init.d/v2raya disable 2>/dev/null
+          		uci -q set v2raya.config.enabled=0 && uci -q commit v2raya
+          		# its own stop can hang (seen on the MX2000): give it 3 s, then kill
+          		( /etc/init.d/v2raya stop > /dev/null 2>&1 & ); sleep 3
+          		killall -9 v2raya v2ray xray 2>/dev/null
+          		nft delete table inet v2raya 2>/dev/null
+          		log "v2rayA stopped and disabled (XLite replaces it)"
+          	fi
+          	return 0
+          }
+
+          ping_server() {   # $1 = server section id
+          	local hp host port ip uip t
+          	hp=$($UC server "$1" 2>/dev/null) || { echo -1; return 1; }
+          	host=${hp% *}; port=${hp##* }
+          	ip=$($UC resolve "$host" 2>/dev/null | head -n 1)
+          	[ -n "$ip" ] && [ -n "$port" ] || { echo -1; return 1; }
+          	# the ping must not go through the proxy
+          	case "$ip" in
+          	*:*) nft add element inet xlite bypass6 "{ $ip }" 2>/dev/null; uip="[$ip]" ;;
+          	*) nft add element inet xlite bypass4 "{ $ip }" 2>/dev/null; uip=$ip ;;
+          	esac
+          	if nft list table inet v2raya > /dev/null 2>&1; then
+          		# v2rayA is still running: it would catch a TCP ping, so use ICMP until XLite takes over
+          		t=$(ping -c 1 -W 2 "$ip" 2>/dev/null | sed -n 's/.*time=\([0-9.]*\) *ms.*/\1/p' | head -n 1)
+          		[ -n "$t" ] || { echo -1; return 1; }
+          		awk -v t="$t" 'BEGIN { printf "%d\n", t + 0.5 }'
+          		return 0
+          	fi
+          	t=$(curl -s --noproxy '*' -o /dev/null --connect-timeout 3 -m 4 -w '%{time_connect}' "http://$uip:$port/" 2>/dev/null)
+          	case "$t" in ''|0|0.000|0.000000) echo -1; return 1 ;; esac
+          	awk -v t="$t" 'BEGIN { printf "%d\n", t * 1000 + 0.5 }'
+          }
+
+          fetch() {   # $1 = url, $2 = file
+          	if command -v curl > /dev/null; then curl -fsSL --retry 2 --connect-timeout 15 -o "$2" "$1"
+          	else wget -q -O "$2" "$1"; fi
+          }
+
+          do_update() {
+          	local tmp
+          	[ -n "$REPO" ] || { echo "update source unknown (reinstall with the install command)"; return 1; }
+          	tmp=$(mktemp -d /tmp/xlite-up.XXXXXX) || return 1
+          	if ! fetch "https://github.com/$REPO/releases/download/${TAG:-xlite}/install.sh" "$tmp/install.sh"; then
+          		rm -rf "$tmp"; echo "download failed (no internet?)"; return 1
+          	fi
+          	XLITE_UPDATE=1 sh "$tmp/install.sh"
+          	local rc=$?
+          	rm -rf "$tmp"
+          	return $rc
+          }
+
+          do_uninstall() {
+          	/etc/init.d/xlite stop 2>/dev/null
+          	/etc/init.d/xlite disable 2>/dev/null
+          	rules_down
+          	for f in $(cat $SHARE/files 2>/dev/null); do rm -f "$f"; done
+          	rm -rf $SHARE /usr/share/ucode/xlite /www/luci-static/resources/view/xlite $RUN /tmp/xlite-core
+          	rm -f /etc/init.d/xlite /usr/bin/xlite /etc/hotplug.d/iface/90-xlite /usr/share/rpcd/ucode/xlite.uc \
+          		/usr/share/rpcd/acl.d/luci-app-xlite.json /usr/share/luci/menu.d/luci-app-xlite.json
+          	rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
+          	/etc/init.d/rpcd reload 2>/dev/null
+          	if [ -x /etc/init.d/v2raya ]; then
+          		uci -q set v2raya.config.enabled=1 && uci -q commit v2raya
+          		/etc/init.d/v2raya enable && /etc/init.d/v2raya start
+          		echo "v2rayA is running again"
+          	fi
+          	echo "XLite removed (settings kept in /etc/config/xlite; delete it by hand if you want)"
+          }
+
+          case "$1" in
+          prepare)
+          	rm -rf $RUN && mkdir -p $RUN
+          	$UC build $RUN
+          	;;
+          rules_up) rules_up ;;
+          rules_when_ready) rules_when_ready ;;
+          rules_down) rules_down ;;
+          sysctl) sysctl_apply ;;
+          stop_v2raya) stop_v2raya ;;
+          core) core_path ;;
+          refresh_ips)
+          	# an interface got a new address: refresh the set of the router's own addresses
+          	nft list table inet xlite > /dev/null 2>&1 || exit 0
+          	nft flush set inet xlite local_ips 2>/dev/null
+          	for a in $(ip -4 -o addr show | sed -n 's/.* inet \([0-9.]*\)\/.*/\1/p'); do nft add element inet xlite local_ips "{ $a }" 2>/dev/null; done
+          	if nft list set inet xlite local_ips6 > /dev/null 2>&1; then
+          		nft flush set inet xlite local_ips6
+          		for a in $(ip -6 -o addr show | sed -n 's/.* inet6 \([0-9a-fA-F:]*\)\/.*/\1/p'); do nft add element inet xlite local_ips6 "{ $a }" 2>/dev/null; done
+          	fi
+          	;;
+          start|stop|restart|reload|enable|disable) /etc/init.d/xlite "$1" ;;
+          status)
+          	echo "version: ${VERSION:-?}"
+          	if pidof xray > /dev/null && nft list table inet xlite > /dev/null 2>&1; then echo "state:   running"; else echo "state:   stopped"; fi
+          	[ -s $RUN/state.json ] && echo "server:  $(jsonfilter -i $RUN/state.json -e '@.name')"
+          	echo "core:    $(core_path 2>/dev/null || echo missing)"
+          	c=$(core_path 2>/dev/null) && grep -aq 'VLESS downlink splice' "$c" && echo "zero-copy: built in"
+          	;;
+          add) $UC add ;;
+          ping) ping_server "$2" ;;
+          update) do_update ;;
+          uninstall) do_uninstall ;;
+          *) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+          esac
+          XLITE_FILE_2
+          chmod 755 "src/usr/bin/xlite"
+          mkdir -p "$(dirname "src/usr/share/luci/menu.d/luci-app-xlite.json")"
+          cat > "src/usr/share/luci/menu.d/luci-app-xlite.json" <<'XLITE_FILE_3'
+          {
+          	"admin/services/xlite": {
+          		"title": "XLite",
+          		"order": 5,
+          		"action": { "type": "view", "path": "xlite/main" },
+          		"depends": { "acl": [ "luci-app-xlite" ] }
+          	}
+          }
+          XLITE_FILE_3
+          mkdir -p "$(dirname "src/usr/share/rpcd/acl.d/luci-app-xlite.json")"
+          cat > "src/usr/share/rpcd/acl.d/luci-app-xlite.json" <<'XLITE_FILE_4'
+          {
+          	"luci-app-xlite": {
+          		"description": "XLite proxy",
+          		"read": {
+          			"ubus": { "xlite": [ "status", "servers", "settings", "ping", "link", "update_state", "log" ] },
+          			"uci": [ "xlite" ]
+          		},
+          		"write": {
+          			"ubus": { "xlite": [ "add", "remove", "rename", "edit", "select", "connect", "set_settings", "update" ] },
+          			"uci": [ "xlite" ]
+          		}
+          	}
+          }
+          XLITE_FILE_4
+          mkdir -p "$(dirname "src/usr/share/rpcd/ucode/xlite.uc")"
+          cat > "src/usr/share/rpcd/ucode/xlite.uc" <<'XLITE_FILE_5'
+          // XLite backend for LuCI (ubus object "xlite")
+          'use strict';
+          import * as fs from 'fs';
+          import { cursor } from 'uci';
+          import * as lib from 'xlite.lib';
+
+          const RUN = '/var/etc/xlite';
+          const SETTINGS = {
+          	transparent: [ 'off', 'all' ], impl: [ 'tproxy', 'redirect' ], ip_forward: [ '0', '1' ], port_sharing: [ '0', '1' ],
+          	dns: [ 'proxy', 'direct' ], tfo: [ 'default', 'on', 'off' ], sniffing: [ 'off', 'http_tls', 'http_tls_quic' ],
+          	mux: [ '0', '1' ], mux_conc: /^([1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$/, splice: [ '0', '1' ], gomaxprocs: /^[0-9]{0,2}$/,
+          	gogc: /^[0-9]{0,4}$/, early_exit: [ '0', '1' ], tcp_cc: [ '', 'cubic', 'bbr' ], tproxy_port: /^[0-9]{2,5}$/,
+          	socks_port: /^[0-9]{0,5}$/, http_port: /^[0-9]{0,5}$/, ipv6: [ 'auto', '0', '1' ], loglevel: [ 'warning', 'info', 'debug', 'error', 'none' ]
+          };
+
+          let splice_cache = {};
+
+          function sh(cmd) {
+          	let p = fs.popen(cmd, 'r');
+          	if (!p)
+          		return '';
+          	let out = p.read('all') ?? '';
+          	p.close();
+          	return out;
+          }
+
+          function uci() {
+          	let d = getenv('XLITE_UCI_DIR'), c = d ? cursor(d) : cursor();
+          	c.load('xlite');
+          	return c;
+          }
+
+          function restart_bg() {
+          	system('( /etc/init.d/xlite restart > /dev/null 2>&1 & )');
+          }
+
+          function stop_bg() {
+          	system('( /etc/init.d/xlite stop > /dev/null 2>&1 & )');
+          }
+
+          function core_pid() {
+          	let j = null;
+          	try { j = json(sh("ubus call service list '{\"name\":\"xlite\"}' 2>/dev/null")); } catch (e) {}
+          	return j?.xlite?.instances?.xray?.running ? j.xlite.instances.xray.pid : null;
+          }
+
+          function first_num(s) {
+          	let m = match(s ?? '', /([0-9]+)/);
+          	return m ? +m[1] : null;
+          }
+
+          function cpu_counters() {
+          	let r = [];
+          	for (let l in split(fs.readfile('/proc/stat') ?? '', '\n')) {
+          		let m = match(l, /^cpu([0-9]+) +(.*)$/);
+          		if (!m)
+          			continue;
+          		let v = map(split(m[2], / +/), (x) => +x);
+          		let idle = v[3] + (v[4] ?? 0), total = 0;
+          		for (let x in v)
+          			total += x;
+          		push(r, [ total - idle, total ]);
+          	}
+          	return r;
+          }
+
+          function net_counters(dev) {
+          	let base = '/sys/class/net/' + replace(dev ?? '', /[^A-Za-z0-9._@-]/g, '') + '/statistics/';
+          	return { rx: +(trim(fs.readfile(base + 'rx_bytes') ?? '0')), tx: +(trim(fs.readfile(base + 'tx_bytes') ?? '0')) };
+          }
+
+          function splice_built(path) {
+          	let st = fs.stat(path);
+          	if (!st)
+          		return false;
+          	let key = path + ':' + st.size + ':' + st.mtime;
+          	if (splice_cache[key] == null)
+          		splice_cache[key] = (trim(sh("grep -aq 'VLESS downlink splice' '" + replace(path, /'/g, '') + "' && echo y")) == 'y');
+          	return splice_cache[key];
+          }
+
+          function release() {
+          	let r = {};
+          	for (let l in split(fs.readfile('/usr/share/xlite/release') ?? '', '\n')) {
+          		let m = match(l, /^([A-Z]+)=(.*)$/);
+          		if (m)
+          			r[lc(m[1])] = m[2];
+          	}
+          	return r;
+          }
+
+          function server_list(c, cur) {
+          	let r = [];
+          	c.foreach('xlite', 'server', (s) => {
+          		let p = lib.parse_link(s.link);
+          		push(r, {
+          			id: s['.name'], name: s.name || p.name || '?', protocol: p.protocol ?? '?', net: p.net ?? '',
+          			header: p.type ?? '', security: p.security ?? '', valid: !p.error, error: p.error, current: s['.name'] == cur
+          		});
+          	});
+          	return r;
+          }
+
+          const methods = {
+          	status: {
+          		call: function() {
+          			let c = uci(), opt = c.get_all('xlite', 'main') ?? {};
+          			let st = null;
+          			try { st = json(fs.readfile(RUN + '/state.json') ?? 'null'); } catch (e) {}
+          			let pid = core_pid(), up = null, mem = null, core = trim(sh('/usr/bin/xlite core 2>/dev/null'));
+          			if (pid) {
+          				let stat = fs.readfile('/proc/' + pid + '/stat') ?? '';
+          				let f = split(substr(stat, rindex(stat, ')') + 2), ' ');
+          				let uptime = +split(fs.readfile('/proc/uptime') ?? '0', ' ')[0];
+          				up = int(uptime - (+f[19]) / 100);
+          				mem = first_num(match(fs.readfile('/proc/' + pid + '/status') ?? '', /VmRSS:[^\n]*/)?.[0]);
+          			}
+          			let rules = (system('nft list table inet xlite > /dev/null 2>&1') == 0);
+          			let wan = st?.wan?.[0] ?? 'wan';
+          			let srv = filter(server_list(c, opt.server), (s) => s.current)[0];
+          			let mi = {};
+          			for (let l in split(fs.readfile('/proc/meminfo') ?? '', '\n')) {
+          				let m = match(l, /^(MemTotal|MemAvailable): +([0-9]+)/);
+          				if (m) mi[m[1]] = +m[2];
+          			}
+          			return {
+          				enabled: opt.enabled == '1', running: !!pid, rules, uptime: up, core_rss_kb: mem,
+          				server: srv ? { id: srv.id, name: srv.name, protocol: srv.protocol, net: srv.net, header: srv.header, security: srv.security } : null,
+          				core: core, core_splice: core ? splice_built(core) : false, splice_on: opt.splice != '0',
+          				wan, net: net_counters(wan), cpu: cpu_counters(), now: +split(fs.readfile('/proc/uptime') ?? '0', ' ')[0],
+          				mem_total_kb: mi.MemTotal, mem_avail_kb: mi.MemAvailable,
+          				v2raya: !!fs.stat('/etc/init.d/v2raya'), release: release(), servers: length(server_list(c, opt.server))
+          			};
+          		}
+          	},
+
+          	servers: {
+          		call: function() {
+          			let c = uci();
+          			return { servers: server_list(c, c.get('xlite', 'main', 'server')) };
+          		}
+          	},
+
+          	add: {
+          		args: { links: '' },
+          		call: function(req) {
+          			let c = uci(), report = [], first = null;
+          			for (let l in split(req.args?.links ?? '', /[\r\n ]+/)) {
+          				l = trim(l);
+          				if (l == '')
+          					continue;
+          				let p = lib.parse_link(l);
+          				if (p.error) {
+          					push(report, { ok: false, error: p.error });
+          					continue;
+          				}
+          				let dup = null, key = replace(p.link, /#.*$/, '');
+          				c.foreach('xlite', 'server', (s) => { if (replace(s.link ?? '', /#.*$/, '') == key) dup = s['.name']; });
+          				if (dup) {
+          					push(report, { ok: true, dup: true, name: p.name });
+          					continue;
+          				}
+          				let id = c.add('xlite', 'server');
+          				c.set('xlite', id, 'name', p.name);
+          				c.set('xlite', id, 'link', p.link);
+          				first ??= id;
+          				push(report, { ok: true, name: p.name, id });
+          			}
+          			let restart = false;
+          			if (first && !c.get('xlite', 'main', 'server')) {
+          				c.set('xlite', 'main', 'server', first);
+          				restart = (c.get('xlite', 'main', 'enabled') == '1');
+          			}
+          			c.save('xlite');
+          			c.commit('xlite');
+          			if (restart)
+          				restart_bg();
+          			return { report };
+          		}
+          	},
+
+          	remove: {
+          		args: { id: '' },
+          		call: function(req) {
+          			let c = uci(), id = req.args?.id;
+          			if (c.get('xlite', id) != 'server')
+          				return { ok: false };
+          			c.delete('xlite', id);
+          			let cur = c.get('xlite', 'main', 'server'), restart = false;
+          			if (cur == id) {
+          				let next = null;
+          				c.foreach('xlite', 'server', (s) => { next ??= s['.name']; });
+          				if (next)
+          					c.set('xlite', 'main', 'server', next);
+          				else
+          					c.delete('xlite', 'main', 'server');
+          				restart = true;
+          			}
+          			c.save('xlite');
+          			c.commit('xlite');
+          			if (restart && c.get('xlite', 'main', 'enabled') == '1')
+          				restart_bg();
+          			return { ok: true };
+          		}
+          	},
+
+          	rename: {
+          		args: { id: '', name: '' },
+          		call: function(req) {
+          			let c = uci(), id = req.args?.id, name = trim(req.args?.name ?? '');
+          			if (c.get('xlite', id) != 'server' || name == '' || length(name) > 64)
+          				return { ok: false };
+          			c.set('xlite', id, 'name', name);
+          			c.save('xlite');
+          			c.commit('xlite');
+          			return { ok: true };
+          		}
+          	},
+
+          	link: {
+          		args: { id: '' },
+          		call: function(req) {
+          			let c = uci();
+          			return { link: c.get('xlite', req.args?.id ?? '', 'link') };
+          		}
+          	},
+
+          	edit: {
+          		args: { id: '', link: '' },
+          		call: function(req) {
+          			let c = uci(), id = req.args?.id, p = lib.parse_link(req.args?.link ?? '');
+          			if (c.get('xlite', id) != 'server')
+          				return { ok: false, error: 'السيرفر غير موجود' };
+          			if (p.error)
+          				return { ok: false, error: p.error };
+          			c.set('xlite', id, 'link', p.link);
+          			c.save('xlite');
+          			c.commit('xlite');
+          			if (c.get('xlite', 'main', 'server') == id && c.get('xlite', 'main', 'enabled') == '1')
+          				restart_bg();
+          			return { ok: true };
+          		}
+          	},
+
+          	select: {
+          		args: { id: '' },
+          		call: function(req) {
+          			let c = uci(), id = req.args?.id;
+          			if (c.get('xlite', id) != 'server')
+          				return { ok: false };
+          			c.set('xlite', 'main', 'server', id);
+          			c.set('xlite', 'main', 'enabled', '1');
+          			c.save('xlite');
+          			c.commit('xlite');
+          			system('/etc/init.d/xlite enable > /dev/null 2>&1');
+          			restart_bg();
+          			return { ok: true };
+          		}
+          	},
+
+          	connect: {
+          		args: { on: false },
+          		call: function(req) {
+          			let c = uci(), on = !!req.args?.on;
+          			if (on && !c.get('xlite', 'main', 'server')) {
+          				let first = null;
+          				c.foreach('xlite', 'server', (s) => { first ??= s['.name']; });
+          				if (!first)
+          					return { ok: false, error: 'ضيف سيرفر أول' };
+          				c.set('xlite', 'main', 'server', first);
+          			}
+          			c.set('xlite', 'main', 'enabled', on ? '1' : '0');
+          			c.save('xlite');
+          			c.commit('xlite');
+          			if (on) {
+          				system('/etc/init.d/xlite enable > /dev/null 2>&1');
+          				restart_bg();
+          			}
+          			else
+          				stop_bg();
+          			return { ok: true };
+          		}
+          	},
+
+          	ping: {
+          		args: { id: '' },
+          		call: function(req) {
+          			let id = replace(req.args?.id ?? '', /[^A-Za-z0-9_]/g, '');
+          			let ms = +trim(sh('/usr/bin/xlite ping ' + id + ' 2>/dev/null') || '-1');
+          			return { id, ms };
+          		}
+          	},
+
+          	settings: {
+          		call: function() {
+          			let c = uci(), opt = c.get_all('xlite', 'main') ?? {}, r = {};
+          			for (let k in SETTINGS)
+          				r[k] = opt[k] ?? '';
+          			r.bypass = opt.bypass ?? '';
+          			return { settings: r, tcp_cc_now: trim(fs.readfile('/proc/sys/net/ipv4/tcp_congestion_control') ?? ''),
+          				tcp_cc_avail: split(trim(fs.readfile('/proc/sys/net/ipv4/tcp_available_congestion_control') ?? ''), ' ') };
+          		}
+          	},
+
+          	set_settings: {
+          		args: { values: {} },
+          		call: function(req) {
+          			let c = uci(), v = req.args?.values ?? {}, bad = [];
+          			for (let k in v) {
+          				let rule = SETTINGS[k], val = '' + v[k];
+          				if (k == 'bypass') {
+          					if (!match(val, /^[0-9A-Fa-f:.\/ ]*$/)) push(bad, k);
+          					else c.set('xlite', 'main', k, trim(val));
+          					continue;
+          				}
+          				if (!rule || (type(rule) == 'array' ? index(rule, val) < 0 : !match(val, rule))) {
+          					push(bad, k);
+          					continue;
+          				}
+          				c.set('xlite', 'main', k, val);
+          			}
+          			c.save('xlite');
+          			c.commit('xlite');
+          			if (c.get('xlite', 'main', 'enabled') == '1')
+          				restart_bg();
+          			return { ok: !length(bad), bad };
+          		}
+          	},
+
+          	update: {
+          		call: function() {
+          			system('( /usr/bin/xlite update > /tmp/xlite-update.log 2>&1; echo "rc=$?" >> /tmp/xlite-update.log ) > /dev/null 2>&1 &');
+          			return { ok: true };
+          		}
+          	},
+
+          	update_state: {
+          		call: function() {
+          			return { log: fs.readfile('/tmp/xlite-update.log') ?? '' };
+          		}
+          	},
+
+          	log: {
+          		call: function() {
+          			return { log: sh("logread 2>/dev/null | grep -E 'xlite|xray' | tail -n 60") };
+          		}
+          	}
+          };
+
+          return { xlite: methods };
+          XLITE_FILE_5
+          mkdir -p "$(dirname "src/usr/share/ucode/xlite/lib.uc")"
+          cat > "src/usr/share/ucode/xlite/lib.uc" <<'XLITE_FILE_6'
+          // XLite: share links -> xray outbounds, xray config and the nftables tproxy ruleset.
+          'use strict';
+
+          const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+          function b64decode(s) {
+          	if (s == null)
+          		return null;
+          	s = replace(replace(trim('' + s), /-/g, '+'), /_/g, '/');
+          	s = replace(s, /[^A-Za-z0-9+\/]/g, '');
+          	if (type(b64dec) == 'function') {
+          		let pad = s;
+          		while (length(pad) % 4)
+          			pad += '=';
+          		let r = b64dec(pad);
+          		if (r != null)
+          			return r;
+          	}
+          	let out = '', bits = 0, nb = 0;
+          	for (let i = 0; i < length(s); i++) {
+          		let v = index(B64, substr(s, i, 1));
+          		if (v < 0)
+          			return null;
+          		bits = ((bits << 6) | v) & 0xffffff;
+          		nb += 6;
+          		if (nb >= 8) {
+          			nb -= 8;
+          			out += chr((bits >> nb) & 0xff);
+          		}
+          	}
+          	return out;
+          }
+
+          function urldecode(s) {
+          	if (s == null)
+          		return null;
+          	s = replace('' + s, /\+/g, ' ');
+          	return replace(s, /%([0-9A-Fa-f]{2})/g, (m, h) => chr(hex(h)));
+          }
+
+          function parse_query(q) {
+          	let r = {};
+          	for (let kv in split(q ?? '', '&')) {
+          		if (kv == '')
+          			continue;
+          		let i = index(kv, '=');
+          		let k = urldecode(i < 0 ? kv : substr(kv, 0, i));
+          		r[k] = (i < 0) ? '' : urldecode(substr(kv, i + 1));
+          	}
+          	return r;
+          }
+
+          // scheme://userinfo@host:port?query#fragment  (host may be [v6])
+          function parse_url(link) {
+          	let m = match(link, /^([A-Za-z0-9+.-]+):\/\/([^#]*)(#(.*))?$/);
+          	if (!m)
+          		return null;
+          	let rest = m[2], frag = urldecode(m[4] ?? '');
+          	let q = '', qi = index(rest, '?');
+          	if (qi >= 0) {
+          		q = substr(rest, qi + 1);
+          		rest = substr(rest, 0, qi);
+          	}
+          	rest = replace(rest, /\/+$/, '');
+          	let user = null, at = rindex(rest, '@');
+          	if (at >= 0) {
+          		user = urldecode(substr(rest, 0, at));
+          		rest = substr(rest, at + 1);
+          	}
+          	let host, port;
+          	let hm = match(rest, /^\[([0-9A-Fa-f:.]+)\]:([0-9]+)$/) || match(rest, /^([^:]+):([0-9]+)$/);
+          	if (hm) {
+          		host = hm[1];
+          		port = +hm[2];
+          	}
+          	else {
+          		host = rest;
+          		port = null;
+          	}
+          	return { scheme: lc(m[1]), user, host, port, query: parse_query(q), name: frag };
+          }
+
+          function csv(s) {
+          	return filter(map(split(s ?? '', ','), (x) => trim(x)), (x) => x != '');
+          }
+
+          // One server = the fields of a share link, the same names v2rayA uses.
+          export function parse_link(link) {
+          	link = trim('' + (link ?? ''));
+          	let scheme = lc(match(link, /^([A-Za-z0-9+.-]+):\/\//)?.[1] ?? '');
+          	let s;
+
+          	if (scheme == 'vmess') {
+          		let j = null;
+          		try { j = json(b64decode(substr(link, 8))); } catch (e) { j = null; }
+          		if (type(j) != 'object')
+          			return { error: 'رابط vmess غير صالح' };
+          		s = {
+          			protocol: 'vmess', name: j.ps ?? '', address: j.add ?? '', port: +(j.port ?? 0),
+          			id: j.id ?? '', aid: +(j.aid ?? 0), scy: j.scy ?? 'auto', net: j.net || 'tcp',
+          			type: j.type || 'none', host: j.host ?? '', path: j.path ?? '',
+          			security: (j.tls == 'tls' || j.tls == 'reality') ? j.tls : 'none',
+          			sni: j.sni ?? '', alpn: j.alpn ?? '', fp: j.fp ?? ''
+          		};
+          	}
+          	else if (scheme == 'vless' || scheme == 'trojan') {
+          		let u = parse_url(link);
+          		if (!u || !u.port)
+          			return { error: 'الرابط ناقص: لازم يكون ' + scheme + '://...@العنوان:البورت' };
+          		let q = u.query;
+          		s = {
+          			protocol: scheme, name: u.name ?? '', address: u.host, port: u.port,
+          			id: u.user ?? '', net: q.type || 'tcp', type: q.headerType || 'none',
+          			host: q.host ?? '', path: q.path ?? '', security: q.security || (scheme == 'trojan' ? 'tls' : 'none'),
+          			sni: q.sni ?? q.peer ?? '', alpn: q.alpn ?? '', fp: q.fp ?? '', pbk: q.pbk ?? '', sid: q.sid ?? '',
+          			spx: q.spx ?? '', flow: q.flow ?? '', mode: q.mode ?? '', service: q.serviceName ?? '',
+          			insecure: (q.allowInsecure == '1' || q.allowInsecure == 'true' || q.insecure == '1')
+          		};
+          		if (s.net == 'grpc' && s.service != '')
+          			s.path = s.service;
+          	}
+          	else if (scheme == 'ss') {
+          		let u = parse_url(link), method, pass, host, port;
+          		if (u && u.user != null && u.port) {
+          			let ui = u.user;
+          			if (index(ui, ':') < 0)
+          				ui = b64decode(ui) ?? '';
+          			let c = index(ui, ':');
+          			method = substr(ui, 0, c); pass = substr(ui, c + 1);
+          			host = u.host; port = u.port;
+          		}
+          		else {
+          			let m = match(link, /^ss:\/\/([^#@?]+)(#(.*))?$/);
+          			let d = m ? b64decode(m[1]) : null;
+          			let mm = d ? match(d, /^([^:]+):(.*)@([^@]+):([0-9]+)$/) : null;
+          			if (!mm)
+          				return { error: 'رابط shadowsocks غير صالح' };
+          			method = mm[1]; pass = mm[2]; host = replace(mm[3], /^\[|\]$/g, ''); port = +mm[4];
+          			u = { name: urldecode(m[3] ?? '') };
+          		}
+          		s = { protocol: 'shadowsocks', name: u.name ?? '', address: host, port, method, password: pass, net: 'tcp', security: 'none' };
+          	}
+          	else
+          		return { error: 'نوع الرابط غير مدعوم (المدعوم: vless و vmess و trojan و ss)' };
+
+          	if (lc(s.net) == 'raw')
+          		s.net = 'tcp';
+          	if (!s.address || !(s.port > 0 && s.port < 65536))
+          		return { error: 'الرابط ما بيه عنوان أو بورت صحيح' };
+          	if (s.name == '')
+          		s.name = s.address;
+          	s.link = link;
+          	return s;
+          }
+
+          const UA = [
+          	'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.75 Safari/537.36',
+          	'Mozilla/5.0 (iPhone; CPU iPhone OS 10_0_2 like Mac OS X) AppleWebKit/601.1 (KHTML, like Gecko) CriOS/53.0.2785.109 Mobile/14A456 Safari/601.1.46'
+          ];
+
+          function stream_settings(s, opt) {
+          	let net = lc(s.net ?? 'tcp');
+          	let ss = { network: net, security: s.security ?? 'none' };
+
+          	if (net == 'tcp' && lc(s.type ?? '') == 'http') {
+          		// the same request/response header v2rayA sends (the server checks the path)
+          		let paths = map(csv(s.path), (p) => (substr(p, 0, 1) == '/') ? p : '/' + p);
+          		ss.tcpSettings = { header: {
+          			type: 'http',
+          			request: {
+          				version: '1.1', method: 'GET', path: length(paths) ? paths : [ '/' ],
+          				headers: {
+          					Host: csv(s.host),
+          					'User-Agent': UA,
+          					'Accept-Encoding': [ 'gzip, deflate' ],
+          					Connection: [ 'keep-alive' ],
+          					Pragma: 'no-cache'
+          				}
+          			},
+          			response: {
+          				version: '1.1', status: '200', reason: 'OK',
+          				headers: {
+          					'Content-Type': [ 'application/octet-stream', 'video/mpeg' ],
+          					'Transfer-Encoding': [ 'chunked' ],
+          					Connection: [ 'keep-alive' ],
+          					Pragma: 'no-cache'
+          				}
+          			}
+          		} };
+          	}
+          	else if (net == 'ws')
+          		ss.wsSettings = { path: s.path || '/', headers: (s.host ? { Host: s.host } : {}) };
+          	else if (net == 'grpc')
+          		ss.grpcSettings = { serviceName: s.path || '', multiMode: (s.mode == 'multi') };
+          	else if (net == 'httpupgrade')
+          		ss.httpupgradeSettings = { path: s.path || '/', host: s.host ?? '' };
+          	else if (net == 'xhttp' || net == 'splithttp')
+          		ss.xhttpSettings = { path: s.path || '/', host: s.host ?? '', mode: s.mode || 'auto' };
+          	else if (net == 'h2' || net == 'http')
+          		ss.httpSettings = { path: s.path || '/', host: csv(s.host) };
+
+          	if (ss.security == 'tls') {
+          		ss.tlsSettings = { serverName: s.sni || s.host || s.domain || s.address, allowInsecure: !!s.insecure };
+          		if (s.alpn)
+          			ss.tlsSettings.alpn = csv(s.alpn);
+          		if (s.fp)
+          			ss.tlsSettings.fingerprint = s.fp;
+          	}
+          	else if (ss.security == 'reality')
+          		ss.realitySettings = {
+          			serverName: s.sni || s.domain || '', fingerprint: s.fp || 'chrome',
+          			publicKey: s.pbk ?? '', shortId: s.sid ?? '', spiderX: s.spx ?? ''
+          		};
+          	else
+          		ss.security = 'none';
+
+          	ss.sockopt = { mark: 128 };
+          	if (opt.tfo == 'on')
+          		ss.sockopt.tcpFastOpen = true;
+          	else if (opt.tfo == 'off')
+          		ss.sockopt.tcpFastOpen = false;
+          	return ss;
+          }
+
+          // s.ip: the address already resolved by the caller (a domain would need DNS, and DNS itself goes
+          // through the proxy: the outbound always gets an IP)
+          export function outbound(s, opt) {
+          	opt ??= {};
+          	let addr = s.ip || s.address;
+          	let o = { tag: 'proxy', protocol: s.protocol };
+          	if (addr != s.address)
+          		s = { ...s, domain: s.address };
+
+          	if (s.protocol == 'vless')
+          		o.settings = { vnext: [ { address: addr, port: +s.port, users: [ { id: s.id, encryption: 'none', flow: s.flow ?? '' } ] } ] };
+          	else if (s.protocol == 'vmess')
+          		o.settings = { vnext: [ { address: addr, port: +s.port, users: [ { id: s.id, alterId: +(s.aid ?? 0), security: s.scy || 'auto' } ] } ] };
+          	else if (s.protocol == 'trojan')
+          		o.settings = { servers: [ { address: addr, port: +s.port, password: s.id } ] };
+          	else if (s.protocol == 'shadowsocks')
+          		o.settings = { servers: [ { address: addr, port: +s.port, method: s.method, password: s.password } ] };
+
+          	o.streamSettings = stream_settings(s, opt);
+          	if (opt.mux && !s.flow)
+          		o.mux = { enabled: true, concurrency: +(opt.mux_conc ?? 8) };
+          	return o;
+          }
+
+          export const PRIVATE4 = [
+          	'0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+          	'192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15',
+          	'198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4'
+          ];
+          export const PRIVATE6 = [ '::/127', '::ffff:0:0/96', '64:ff9b::/96', '100::/64', 'fc00::/7', 'fe80::/10', 'ff00::/8' ];
+
+          // opt: the uci "main" section; srv: the server (with .ip); ctx: { ipv6, port }
+          export function xray_config(opt, srv, ctx) {
+          	let share = (opt.port_sharing == '1');
+          	let inb = [];
+          	let sniff = { enabled: false };
+          	if (opt.sniffing == 'http_tls')
+          		sniff = { enabled: true, destOverride: [ 'http', 'tls' ], routeOnly: true };
+          	else if (opt.sniffing == 'http_tls_quic')
+          		sniff = { enabled: true, destOverride: [ 'http', 'tls', 'quic' ], routeOnly: true };
+
+          	if (opt.transparent != 'off') {
+          		let tp = { tproxy: opt.impl == 'redirect' ? 'redirect' : 'tproxy' };
+          		push(inb, { tag: 'transparent', listen: (share || opt.impl == 'redirect') ? '0.0.0.0' : '127.0.0.1', port: +ctx.port, protocol: 'dokodemo-door',
+          			settings: { network: 'tcp,udp', followRedirect: true }, streamSettings: { sockopt: tp }, sniffing: sniff });
+          		if (ctx.ipv6)
+          			push(inb, { tag: 'transparent6', listen: '::1', port: +ctx.port, protocol: 'dokodemo-door',
+          				settings: { network: 'tcp,udp', followRedirect: true }, streamSettings: { sockopt: tp }, sniffing: sniff });
+          	}
+          	if (+opt.socks_port > 0)
+          		push(inb, { tag: 'socks', listen: share ? '0.0.0.0' : '127.0.0.1', port: +opt.socks_port, protocol: 'socks',
+          			settings: { udp: true }, sniffing: sniff });
+          	if (+opt.http_port > 0)
+          		push(inb, { tag: 'http', listen: share ? '0.0.0.0' : '127.0.0.1', port: +opt.http_port, protocol: 'http', sniffing: sniff });
+
+          	let mux = (opt.mux == '1');
+          	let ob = [ outbound(srv, { tfo: opt.tfo, mux, mux_conc: opt.mux_conc }),
+          		{ tag: 'direct', protocol: 'freedom', streamSettings: { sockopt: { mark: 128 } } },
+          		{ tag: 'block', protocol: 'blackhole' } ];
+
+          	let rules = [ { type: 'field', ip: [ ...PRIVATE4, '::1/128', 'fc00::/7', 'fe80::/10', 'ff00::/8' ], outboundTag: 'direct' } ];
+          	push(rules, { type: 'field', network: 'tcp,udp', outboundTag: 'proxy' });
+
+          	return {
+          		log: { loglevel: opt.loglevel || 'warning', access: 'none' },
+          		inbounds: inb,
+          		outbounds: ob,
+          		routing: { domainStrategy: 'AsIs', rules }
+          	};
+          }
+
+          function nft_set(name, typ, elems) {
+          	let s = `\tset ${name} {\n\t\ttype ${typ}\n\t\tflags interval\n\t\tauto-merge\n`;
+          	if (length(elems))
+          		s += `\t\telements = { ${join(', ', elems)} }\n`;
+          	return s + '\t}\n';
+          }
+
+          function q(n) {
+          	return '"' + replace(n, /[^A-Za-z0-9._@-]/g, '') + '"';
+          }
+
+          // ctx: { port, ipv6, wan: [devs], lan: [devs], local4: [], local6: [], bypass4: [], bypass6: [] }
+          export function nft_rules(opt, ctx) {
+          	let fam = ctx.ipv6 ? 'meta nfproto { ipv4, ipv6 }' : 'meta nfproto ipv4';
+          	let early = (opt.early_exit != '0');
+          	let r = 'table inet xlite {\n';
+          	r += nft_set('whitelist', 'ipv4_addr', PRIVATE4);
+          	r += nft_set('whitelist6', 'ipv6_addr', PRIVATE6);
+          	r += nft_set('local_ips', 'ipv4_addr', ctx.local4 ?? []);
+          	r += nft_set('local_ips6', 'ipv6_addr', ctx.local6 ?? []);
+          	r += nft_set('bypass4', 'ipv4_addr', ctx.bypass4 ?? []);
+          	r += nft_set('bypass6', 'ipv6_addr', ctx.bypass6 ?? []);
+
+          	r += '\tchain tp_out {\n';
+          	if (early)
+          		for (let d in ctx.lan ?? [])
+          			r += `\t\toifname ${q(d)} return\n`;
+          	r += '\t\tmeta mark & 0x80 == 0x80 return\n';
+          	r += '\t\tmeta l4proto { tcp, udp } fib saddr type local fib daddr type != local jump tp_rule\n';
+          	r += '\t}\n';
+
+          	r += '\tchain tp_pre {\n';
+          	if (early)
+          		for (let d in ctx.wan ?? [])
+          			r += `\t\tiifname ${q(d)} return\n`;
+          	r += '\t\tiifname "lo" mark & 0xc0 != 0x40 return\n';
+          	r += '\t\tmeta l4proto { tcp, udp } fib saddr type != local fib daddr type != local jump tp_rule\n';
+          	if (opt.impl != 'redirect') {
+          		r += `\t\tmeta l4proto { tcp, udp } mark & 0xc0 == 0x40 tproxy ip to 127.0.0.1:${+ctx.port}\n`;
+          		if (ctx.ipv6)
+          			r += `\t\tmeta l4proto { tcp, udp } mark & 0xc0 == 0x40 tproxy ip6 to [::1]:${+ctx.port}\n`;
+          	}
+          	r += '\t}\n';
+
+          	r += `\tchain output {\n\t\ttype route hook output priority mangle - 5; policy accept;\n\t\t${fam} jump tp_out\n\t}\n`;
+          	r += `\tchain prerouting {\n\t\ttype filter hook prerouting priority mangle - 5; policy accept;\n\t\t${fam} jump tp_pre\n\t}\n`;
+
+          	r += '\tchain tp_rule {\n';
+          	r += '\t\tmeta mark set ct mark\n';
+          	r += '\t\tmeta mark & 0xc0 == 0x40 return\n';
+          	if (opt.dns == 'direct')
+          		r += '\t\tmeta l4proto { tcp, udp } th dport 53 return\n';
+          	r += '\t\tip daddr @local_ips return\n\t\tip6 daddr @local_ips6 return\n';
+          	r += '\t\tip daddr @whitelist return\n\t\tip6 daddr @whitelist6 return\n';
+          	r += '\t\tip daddr @bypass4 return\n\t\tip6 daddr @bypass6 return\n';
+          	r += '\t\tjump iso\n';
+          	r += '\t\tjump tp_mark\n';
+          	r += '\t}\n';
+          	r += '\tchain iso {\n\t}\n';
+          	r += '\tchain tp_mark {\n';
+          	r += '\t\ttcp flags & (fin | syn | rst | ack) == syn meta mark set mark | 0x40\n';
+          	r += '\t\tmeta l4proto udp ct state new meta mark set mark | 0x40\n';
+          	r += '\t\tct mark set mark\n';
+          	r += '\t}\n';
+          	r += '}\n';
+          	return r;
+          }
+
+          // redirect mode (no tproxy kernel module): TCP only, like v2rayA's "redirect"
+          export function nft_redirect(opt, ctx) {
+          	let r = 'table inet xlite_nat {\n';
+          	r += '\tchain prerouting {\n\t\ttype nat hook prerouting priority dstnat - 5; policy accept;\n';
+          	r += `\t\tmeta l4proto tcp meta mark & 0xc0 == 0x40 redirect to :${+ctx.port}\n\t}\n`;
+          	r += '\tchain output {\n\t\ttype nat hook output priority -105; policy accept;\n';
+          	r += `\t\tmeta l4proto tcp meta mark & 0xc0 == 0x40 redirect to :${+ctx.port}\n\t}\n`;
+          	r += '}\n';
+          	return r;
+          }
+          XLITE_FILE_6
+          mkdir -p "$(dirname "src/usr/share/xlite/defaults")"
+          cat > "src/usr/share/xlite/defaults" <<'XLITE_FILE_7'
+          # option defaults: added to /etc/config/xlite when missing (install and update)
+          enabled=0
+          transparent=all
+          impl=tproxy
+          ip_forward=1
+          port_sharing=0
+          dns=proxy
+          tfo=default
+          sniffing=off
+          mux=0
+          mux_conc=8
+          splice=1
+          gomaxprocs=1
+          gogc=200
+          early_exit=1
+          tcp_cc=
+          tproxy_port=52345
+          socks_port=20170
+          http_port=20171
+          ipv6=auto
+          loglevel=warning
+          XLITE_FILE_7
+          mkdir -p "$(dirname "src/usr/share/xlite/gen.uc")"
+          cat > "src/usr/share/xlite/gen.uc" <<'XLITE_FILE_8'
+          // XLite helper: ucode /usr/share/xlite/gen.uc <command> [args]
+          //   build <outdir>     xray config + nft rules + env for the selected server (exit 1 = nothing to run)
+          //   add               share links on stdin (one per line) -> server sections; prints a JSON report
+          //   resolve <host>    IPv4 addresses of a host (one per line)
+          //   server <id>       "address port" of a server
+          'use strict';
+          import * as fs from 'fs';
+          import { cursor } from 'uci';
+          import * as lib from 'xlite.lib';
+
+          const CONFDIR = getenv('XLITE_UCI_DIR');
+          const IS_IP4 = /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/;
+          const IS_IP6 = /^[0-9A-Fa-f:]+:[0-9A-Fa-f:.]*$/;
+
+          function uci() {
+          	let c = CONFDIR ? cursor(CONFDIR) : cursor();
+          	c.load('xlite');
+          	return c;
+          }
+
+          function sh(cmd) {
+          	let p = fs.popen(cmd, 'r');
+          	if (!p)
+          		return '';
+          	let out = p.read('all') ?? '';
+          	p.close();
+          	return out;
+          }
+
+          function lines(s) {
+          	return filter(map(split(s ?? '', '\n'), (x) => trim(x)), (x) => x != '');
+          }
+
+          function shq(s) {
+          	return "'" + replace('' + s, /'/g, "'\\''") + "'";
+          }
+
+          function resolve(host) {
+          	if (match(host, IS_IP4))
+          		return [ host ];
+          	if (match(host, IS_IP6))
+          		return [ host ];
+          	let out = sh('nslookup ' + shq(host) + ' 2>/dev/null'), seen = false, ips = [];
+          	for (let l in split(out, '\n')) {
+          		if (match(l, /^Name:/))
+          			seen = true;
+          		else if (seen) {
+          			let m = match(l, /([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+          			if (m && index(ips, m[1]) < 0)
+          				push(ips, m[1]);
+          		}
+          	}
+          	return ips;
+          }
+
+          function ifdevs(ifaces) {
+          	let devs = [];
+          	for (let i in ifaces) {
+          		let j = null;
+          		try { j = json(sh('ubus call network.interface.' + replace(i, /[^A-Za-z0-9_-]/g, '') + ' status 2>/dev/null')); } catch (e) {}
+          		for (let d in [ j?.l3_device, j?.device ])
+          			if (d && index(devs, d) < 0)
+          				push(devs, d);
+          	}
+          	return devs;
+          }
+
+          function zone_networks(c, zname) {
+          	let nets = [];
+          	c.load('firewall');
+          	c.foreach('firewall', 'zone', (z) => {
+          		if (z.name == zname)
+          			for (let n in (type(z.network) == 'array' ? z.network : split(z.network ?? '', ' ')))
+          				if (n != '')
+          					push(nets, n);
+          	});
+          	return nets;
+          }
+
+          function local_ips(fam) {
+          	let ips = [];
+          	for (let l in lines(sh('ip -' + fam + ' -o addr show 2>/dev/null'))) {
+          		let m = match(l, fam == 4 ? /inet ([0-9.]+)\// : /inet6 ([0-9a-fA-F:]+)\//);
+          		if (m && index(ips, m[1]) < 0)
+          			push(ips, m[1]);
+          	}
+          	return ips;
+          }
+
+          function ipv6_on(opt) {
+          	if (opt.ipv6 == '0')
+          		return false;
+          	if (!fs.stat('/proc/net/if_inet6'))
+          		return false;
+          	if (opt.ipv6 == '1')
+          		return true;
+          	return length(lines(sh('ip -6 route show default 2>/dev/null'))) > 0;
+          }
+
+          function servers(c) {
+          	let r = [];
+          	c.foreach('xlite', 'server', (s) => {
+          		let p = lib.parse_link(s.link);
+          		push(r, { id: s['.name'], name: s.name || p.name, link: s.link, parsed: p });
+          	});
+          	return r;
+          }
+
+          function build(outdir) {
+          	let c = uci();
+          	let opt = c.get_all('xlite', 'main') ?? {};
+          	let all = servers(c);
+          	let cur = filter(all, (s) => s.id == opt.server)[0] ?? all[0];
+          	if (!cur) {
+          		warn('xlite: no server: add one first\n');
+          		return 1;
+          	}
+          	if (cur.parsed.error) {
+          		warn('xlite: the selected server link is not valid: ' + cur.parsed.error + '\n');
+          		return 1;
+          	}
+          	let srv = { ...cur.parsed };
+          	let ips = resolve(srv.address);
+          	if (!length(ips)) {
+          		warn('xlite: cannot resolve the server address\n');
+          		return 1;
+          	}
+          	srv.ip = ips[0];
+
+          	let ctx = {
+          		port: +(opt.tproxy_port || 52345),
+          		ipv6: ipv6_on(opt),
+          		wan: ifdevs(length(zone_networks(c, 'wan')) ? zone_networks(c, 'wan') : [ 'wan', 'wan6' ]),
+          		lan: ifdevs(length(zone_networks(c, 'lan')) ? zone_networks(c, 'lan') : [ 'lan' ]),
+          		local4: local_ips(4),
+          		local6: local_ips(6),
+          		bypass4: [], bypass6: []
+          	};
+          	// every server goes direct (the core's own connection is marked anyway; this keeps the ping
+          	// of the other servers and a server switch away from the proxy)
+          	for (let s in all) {
+          		if (s.parsed.error)
+          			continue;
+          		for (let ip in (s.id == cur.id ? ips : resolve(s.parsed.address)))
+          			if (match(ip, IS_IP4)) { if (index(ctx.bypass4, ip) < 0) push(ctx.bypass4, ip); }
+          			else if (index(ctx.bypass6, ip) < 0) push(ctx.bypass6, ip);
+          	}
+          	for (let a in split(opt.bypass ?? '', ' '))
+          		if (match(a, /^[0-9.\/]+$/)) push(ctx.bypass4, a);
+          		else if (match(a, /^[0-9A-Fa-f:.\/]+$/) && index(a, ':') >= 0) push(ctx.bypass6, a);
+
+          	fs.mkdir(outdir);
+          	let cfg = lib.xray_config(opt, srv, ctx);
+          	fs.writefile(outdir + '/config.json', sprintf('%.2J\n', cfg));
+          	fs.writefile(outdir + '/rules.nft', (opt.transparent == 'off') ? '' : lib.nft_rules(opt, ctx));
+          	fs.writefile(outdir + '/redirect.nft', (opt.transparent != 'off' && opt.impl == 'redirect') ? lib.nft_redirect(opt, ctx) : '');
+          	let env = sprintf("GOMAXPROCS=%s\nGOGC=%s\n", (+opt.gomaxprocs > 0) ? opt.gomaxprocs : '', (+opt.gogc > 0) ? opt.gogc : '');
+          	if (opt.splice == '0')
+          		env += 'XRAY_VLESS_SPLICE=off\n';
+          	fs.writefile(outdir + '/env', env);
+          	fs.writefile(outdir + '/state.json', sprintf('%J\n', { server: cur.id, name: cur.name, ip: srv.ip, ipv6: ctx.ipv6, wan: ctx.wan, lan: ctx.lan }));
+          	return 0;
+          }
+
+          function add() {
+          	let c = uci(), report = [], text = fs.stdin.read('all') ?? '';
+          	let first = null;
+          	for (let l in lines(text)) {
+          		let p = lib.parse_link(l);
+          		if (p.error) {
+          			push(report, { ok: false, error: p.error, link: substr(l, 0, 24) });
+          			continue;
+          		}
+          		let dup = null, key = replace(p.link, /#.*$/, '');
+          		c.foreach('xlite', 'server', (s) => { if (replace(s.link ?? '', /#.*$/, '') == key) dup = s['.name']; });
+          		if (dup) {
+          			push(report, { ok: true, id: dup, name: p.name, dup: true });
+          			continue;
+          		}
+          		let id = c.add('xlite', 'server');
+          		c.set('xlite', id, 'name', p.name);
+          		c.set('xlite', id, 'link', p.link);
+          		first ??= id;
+          		push(report, { ok: true, id, name: p.name });
+          	}
+          	if (first && !c.get('xlite', 'main', 'server'))
+          		c.set('xlite', 'main', 'server', first);
+          	c.save('xlite');
+          	c.commit('xlite');
+          	print(sprintf('%J\n', report));
+          	return 0;
+          }
+
+          let cmd = ARGV[0];
+          let rc = 2;
+          if (cmd == 'build')
+          	rc = build(ARGV[1] ?? '/var/etc/xlite');
+          else if (cmd == 'add')
+          	rc = add();
+          else if (cmd == 'server') {
+          	// address and port of one server (for the ping)
+          	let c = uci(), l = c.get('xlite', ARGV[1] ?? '', 'link'), p = l ? lib.parse_link(l) : { error: 'no' };
+          	if (!p.error) {
+          		print(p.address, ' ', p.port, '\n');
+          		rc = 0;
+          	}
+          	else
+          		rc = 1;
+          }
+          else if (cmd == 'resolve') {
+          	print(join('\n', resolve(ARGV[1] ?? '')), '\n');
+          	rc = 0;
+          }
+          else
+          	warn('usage: gen.uc build <dir> | add | resolve <host>\n');
+          exit(rc);
+          XLITE_FILE_8
+          mkdir -p "$(dirname "src/www/luci-static/resources/view/xlite/main.js")"
+          cat > "src/www/luci-static/resources/view/xlite/main.js" <<'XLITE_FILE_9'
+          'use strict';
+          'require view';
+          'require rpc';
+          'require ui';
+          'require poll';
+
+          var callStatus = rpc.declare({ object: 'xlite', method: 'status' });
+          var callServers = rpc.declare({ object: 'xlite', method: 'servers' });
+          var callAdd = rpc.declare({ object: 'xlite', method: 'add', params: [ 'links' ] });
+          var callRemove = rpc.declare({ object: 'xlite', method: 'remove', params: [ 'id' ] });
+          var callRename = rpc.declare({ object: 'xlite', method: 'rename', params: [ 'id', 'name' ] });
+          var callLink = rpc.declare({ object: 'xlite', method: 'link', params: [ 'id' ] });
+          var callEdit = rpc.declare({ object: 'xlite', method: 'edit', params: [ 'id', 'link' ] });
+          var callSelect = rpc.declare({ object: 'xlite', method: 'select', params: [ 'id' ] });
+          var callConnect = rpc.declare({ object: 'xlite', method: 'connect', params: [ 'on' ] });
+          var callPing = rpc.declare({ object: 'xlite', method: 'ping', params: [ 'id' ] });
+          var callSettings = rpc.declare({ object: 'xlite', method: 'settings' });
+          var callSetSettings = rpc.declare({ object: 'xlite', method: 'set_settings', params: [ 'values' ] });
+          var callUpdate = rpc.declare({ object: 'xlite', method: 'update' });
+          var callUpdateState = rpc.declare({ object: 'xlite', method: 'update_state' });
+          var callLog = rpc.declare({ object: 'xlite', method: 'log' });
+
+          var CSS = [
+          	'.xl{--bg:#0E131A;--card:#151C25;--line:#222C39;--line2:#2A3442;--tx:#E8EDF3;--mut:#9AA7B6;--ok:#34D7A1;--okt:#7FE3C1;--vpn:#6E8BFF;--warn:#F5B544;--bad:#F08A7A;',
+          	'background:var(--bg);color:var(--tx);font-family:"IBM Plex Sans Arabic",Tahoma,system-ui,sans-serif;border-radius:18px;padding:16px;margin:0 auto;max-width:980px;box-sizing:border-box;line-height:1.5}',
+          	'.xl *{box-sizing:border-box}',
+          	'.xl-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}',
+          	'.xl-title{display:flex;flex-direction:column}.xl-title small{color:var(--mut);font-size:12px}.xl-title b{font-size:22px}',
+          	'.xl-conn{display:flex;align-items:center;gap:8px;height:40px;padding:0 16px;border-radius:999px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}',
+          	'.xl-conn.on{background:#12241F;border:1px solid #1E4A3C;color:var(--okt)}.xl-conn.off{background:#2A1A1A;border:1px solid #5A2E2E;color:#F2A8A0}',
+          	'.xl-conn.busy{opacity:.6;cursor:progress}',
+          	'.xl-dot{width:9px;height:9px;border-radius:50%;background:currentColor;display:inline-block}',
+          	'.xl-tabs{display:flex;gap:4px;padding:4px;border-radius:14px;background:var(--card);border:1px solid var(--line);margin-bottom:14px}',
+          	'.xl-tabs button{flex:1 1 0;height:38px;border-radius:10px;border:0;background:transparent;color:var(--mut);font-size:13px;cursor:pointer;font-family:inherit}',
+          	'.xl-tabs button.cur{background:#24303F;color:var(--tx);font-weight:600}',
+          	'.xl-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}',
+          	'.xl-card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;display:flex;flex-direction:column;gap:10px;min-width:0}',
+          	'.xl-card h3{margin:0;font-size:14px;font-weight:600;color:var(--tx)}',
+          	'.xl-mut{color:var(--mut);font-size:12px}',
+          	'.xl-big{font-size:26px;font-weight:700;line-height:1.2}.xl-big small{font-size:13px;color:var(--mut);font-weight:400}',
+          	'.xl-row{display:flex;align-items:center;justify-content:space-between;gap:10px}',
+          	'.xl-btn{height:40px;padding:0 16px;border-radius:12px;border:1px solid #3A4656;background:transparent;color:var(--tx);font-size:14px;cursor:pointer;font-family:inherit;white-space:nowrap}',
+          	'.xl-btn:hover{border-color:#52627A}.xl-btn.pri{background:var(--ok);border-color:var(--ok);color:#0E131A;font-weight:600}',
+          	'.xl-btn.sm{height:34px;padding:0 12px;font-size:13px;border-radius:10px}.xl-btn.danger{color:var(--bad);border-color:#5A2E2E}',
+          	'.xl-bar{flex:1;height:10px;border-radius:6px;background:#1E2733;overflow:hidden}.xl-bar>i{display:block;height:100%;border-radius:6px;background:var(--vpn);transition:width .4s}',
+          	'.xl-chart{height:90px;border-radius:12px;background:#111821;direction:ltr}',
+          	'.xl-note{display:flex;gap:8px;align-items:center;padding:10px 12px;border-radius:12px;background:#12241F;border:1px solid #1E4A3C;color:#B5F0DB;font-size:12.5px}',
+          	'.xl-note.warn{background:#251E10;border-color:#4A3A16;color:#F5C76A}',
+          	'.xl-in{width:100%;min-height:44px;padding:10px 12px;border-radius:12px;background:var(--card);border:1px solid var(--line2);color:var(--tx);font-family:inherit;font-size:13px;direction:ltr;text-align:left}',
+          	'textarea.xl-in{min-height:70px;resize:vertical}',
+          	'.xl-srv{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;padding:14px;border-radius:14px;background:var(--card);border:1px solid var(--line);color:var(--tx);text-align:right;font-family:inherit;cursor:pointer}',
+          	'.xl-srv.cur{background:#12241F;border-color:var(--ok)}.xl-srv .n{font-size:15px;font-weight:600}',
+          	'.xl-srv .acts{display:flex;gap:6px;flex-wrap:wrap}',
+          	'.xl-list{display:flex;flex-direction:column;gap:10px}',
+          	'.xl-set{background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-bottom:14px}',
+          	'.xl-set h3{margin:0;padding:14px 16px 6px;font-size:13px;font-weight:600;color:var(--mut)}',
+          	'.xl-opt{display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid #1F2834}',
+          	'.xl-opt .t{flex:1;min-width:0;display:flex;flex-direction:column}.xl-opt .t span:first-child{font-size:14px}',
+          	'.xl-opt select,.xl-opt input[type=number],.xl-opt input[type=text]{height:38px;border-radius:10px;background:#1E2733;border:1px solid var(--line2);color:var(--tx);padding:0 10px;font-family:inherit;max-width:180px}',
+          	'.xl-sw{position:relative;width:46px;height:26px;border-radius:999px;border:0;background:#2A3442;cursor:pointer;flex-shrink:0;padding:0}',
+          	'.xl-sw::after{content:"";position:absolute;top:3px;right:3px;width:20px;height:20px;border-radius:50%;background:#8D9AAB;transition:all .2s}',
+          	'.xl-sw.on{background:var(--ok)}.xl-sw.on::after{right:23px;background:#0E131A}',
+          	'.xl-ping{font-size:14px;font-weight:600}.xl-ping.g{color:var(--okt)}.xl-ping.y{color:#F5C76A}.xl-ping.r{color:var(--bad)}',
+          	'.xl-pre{direction:ltr;text-align:left;white-space:pre-wrap;font-size:12px;background:#111821;border-radius:12px;padding:10px;max-height:260px;overflow:auto;color:#C3CDD8;margin:0}',
+          	'.xl-save{position:sticky;bottom:0;display:flex;justify-content:flex-end;gap:10px;padding:10px 0;background:linear-gradient(transparent,var(--bg) 35%)}',
+          	'@media (max-width:600px){.xl{padding:12px;border-radius:0}.xl-tabs button{font-size:12px}.xl-srv{flex-wrap:wrap}}'
+          ].join('\n');
+
+          var TABS = [ [ 'home', 'الرئيسية' ], [ 'servers', 'السيرفرات' ], [ 'iso', 'العزل' ], [ 'settings', 'الإعدادات' ] ];
+
+          function fmtUp(s) {
+          	if (s == null) return '';
+          	var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+          	return h > 0 ? h + 'س ' + m + 'د' : m + 'د';
+          }
+
+          function pingClass(ms) {
+          	if (ms == null) return '';
+          	if (ms < 0) return 'r';
+          	return ms < 100 ? 'g' : (ms < 150 ? 'y' : 'r');
+          }
+
+          function pingText(ms) {
+          	if (ms == null) return '…';
+          	return ms < 0 ? 'ما يرد' : ms + ' ms';
+          }
+
+          function protoText(s) {
+          	var t = (s.protocol || '').toUpperCase() + ' · ' + (s.net || 'tcp').toUpperCase();
+          	if (s.header === 'http') t += ' · HTTP header';
+          	if (s.security && s.security !== 'none') t += ' · ' + s.security.toUpperCase();
+          	return t;
+          }
+
+          return view.extend({
+          	tab: 'home',
+          	pings: {},
+          	samples: [],
+          	last: null,
+
+          	load: function() {
+          		return Promise.all([ callStatus(), callServers(), callSettings() ]);
+          	},
+
+          	render: function(data) {
+          		this.status = data[0] || {};
+          		this.servers = (data[1] && data[1].servers) || [];
+          		this.settings = (data[2] && data[2].settings) || {};
+          		this.settingsInfo = data[2] || {};
+
+          		this.root = E('div', { 'class': 'xl', 'dir': 'rtl' });
+          		this.draw();
+          		poll.add(L.bind(this.tick, this), 2);
+          		return E([], [ E('style', {}, CSS), this.root ]);
+          	},
+
+          	draw: function() {
+          		var self = this, st = this.status;
+          		var on = !!st.enabled;
+          		var conn = E('button', {
+          			'class': 'xl-conn ' + (on ? 'on' : 'off'), 'role': 'switch', 'aria-checked': on ? 'true' : 'false',
+          			'click': function(ev) { self.toggleConn(ev.currentTarget, !on); }
+          		}, [ E('span', { 'class': 'xl-dot' }), on ? (st.running ? 'متصل' : 'يتصل…') : 'مفصول' ]);
+
+          		var tabs = E('nav', { 'class': 'xl-tabs', 'aria-label': 'أقسام الأداة' }, TABS.map(function(t) {
+          			return E('button', { 'class': self.tab === t[0] ? 'cur' : '', 'click': function() { self.tab = t[0]; self.draw(); } }, t[1]);
+          		}));
+
+          		var body;
+          		if (this.tab === 'servers') body = this.drawServers();
+          		else if (this.tab === 'iso') body = this.drawIso();
+          		else if (this.tab === 'settings') body = this.drawSettings();
+          		else body = this.drawHome();
+
+          		this.root.innerHTML = '';
+          		this.root.appendChild(E('div', { 'class': 'xl-head' }, [
+          			E('div', { 'class': 'xl-title' }, [ E('small', {}, 'الخدمات'), E('b', {}, 'XLite') ]), conn ]));
+          		this.root.appendChild(tabs);
+          		this.root.appendChild(body);
+          	},
+
+          	tick: function() {
+          		var self = this;
+          		return callStatus().then(function(st) {
+          			self.status = st || {};
+          			if (st && st.net) {
+          				if (self.last && st.now > self.last.now) {
+          					var dt = st.now - self.last.now;
+          					var rx = Math.max(0, (st.net.rx - self.last.net.rx) * 8 / dt / 1e6);
+          					var tx = Math.max(0, (st.net.tx - self.last.net.tx) * 8 / dt / 1e6);
+          					var cpu = (st.cpu || []).map(function(c, i) {
+          						var p = (self.last.cpu || [])[i];
+          						return p && c[1] > p[1] ? Math.round(100 * (c[0] - p[0]) / (c[1] - p[1])) : 0;
+          					});
+          					self.samples.push({ rx: rx, tx: tx, cpu: cpu });
+          					if (self.samples.length > 60) self.samples.shift();
+          				}
+          				self.last = st;
+          			}
+          			if (self.tab === 'home') {
+          				self.draw();
+          			}
+          			else {
+          				var c = self.root.querySelector('.xl-conn');
+          				if (c) {
+          					var on = !!st.enabled;
+          					c.className = 'xl-conn ' + (on ? 'on' : 'off');
+          					c.lastChild.textContent = on ? (st.running ? 'متصل' : 'يتصل…') : 'مفصول';
+          				}
+          			}
+          		});
+          	},
+
+          	toggleConn: function(btn, on) {
+          		var self = this;
+          		btn.classList.add('busy');
+          		return callConnect(on).then(function(r) {
+          			if (r && r.ok === false && r.error) ui.addNotification(null, E('p', {}, r.error), 'warning');
+          			setTimeout(function() { self.tick(); }, 1500);
+          		});
+          	},
+
+          	chart: function() {
+          		var s = this.samples, w = 342, h = 96, max = 10;
+          		s.forEach(function(x) { max = Math.max(max, x.rx * 1.15); });
+          		var pts = s.map(function(x, i) {
+          			var px = s.length > 1 ? Math.round(i * w / (s.length - 1)) : 0;
+          			return px + ',' + Math.round(h - 4 - x.rx / max * (h - 8));
+          		});
+          		var svg = '<svg width="100%" height="90" viewBox="0 0 342 96" preserveAspectRatio="none" role="img" aria-label="سرعة التنزيل">';
+          		if (pts.length > 1) {
+          			svg += '<path d="M0,96 L' + pts.join(' L') + ' L342,96 Z" fill="#6E8BFF" fill-opacity="0.2"></path>';
+          			svg += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="#6E8BFF" stroke-width="1.5" vector-effect="non-scaling-stroke"></polyline>';
+          		}
+          		svg += '</svg>';
+          		var d = E('div', { 'class': 'xl-chart' });
+          		d.innerHTML = svg;
+          		return d;
+          	},
+
+          	drawHome: function() {
+          		var self = this, st = this.status, cur = st.server, last = this.samples[this.samples.length - 1] || { rx: 0, tx: 0, cpu: [] };
+          		var best = null;
+          		Object.keys(this.pings).forEach(function(k) { var v = self.pings[k]; if (v >= 0 && (best == null || v < best)) best = v; });
+
+          		var srvCard = E('div', { 'class': 'xl-card' }, [
+          			E('div', { 'class': 'xl-row' }, [
+          				E('div', {}, [
+          					E('div', { 'class': 'xl-mut' }, 'السيرفر الحالي'),
+          					E('div', { 'style': 'font-size:18px;font-weight:700' }, cur ? cur.name : 'ما مضاف سيرفر'),
+          					E('div', { 'class': 'xl-mut' }, cur ? protoText(cur) : 'روح لقسم السيرفرات وضيف رابط')
+          				]),
+          				E('div', { 'style': 'text-align:left' }, [
+          					cur && this.pings[cur.id] != null ? E('div', { 'class': 'xl-ping ' + pingClass(this.pings[cur.id]), 'style': 'font-size:22px' }, pingText(this.pings[cur.id])) : '',
+          					E('div', { 'class': 'xl-mut' }, st.running ? 'متصل ' + fmtUp(st.uptime) : (st.enabled ? 'يتصل…' : 'مفصول'))
+          				])
+          			]),
+          			E('button', { 'class': 'xl-btn', 'click': function() { self.tab = 'servers'; self.draw(); } }, 'تغيير السيرفر')
+          		]);
+
+          		var speed = E('div', { 'class': 'xl-card' }, [
+          			E('div', { 'style': 'display:grid;grid-template-columns:1fr 1fr;gap:10px' }, [
+          				E('div', {}, [ E('div', { 'class': 'xl-mut' }, 'تنزيل'), E('div', { 'class': 'xl-big' }, [ last.rx.toFixed(last.rx < 10 ? 1 : 0), E('small', {}, ' Mbit/s') ]) ]),
+          				E('div', {}, [ E('div', { 'class': 'xl-mut' }, 'رفع'), E('div', { 'class': 'xl-big' }, [ last.tx.toFixed(last.tx < 10 ? 1 : 0), E('small', {}, ' Mbit/s') ]) ])
+          			]),
+          			this.chart(),
+          			E('div', { 'class': 'xl-mut' }, 'آخر دقيقتين · بورت ' + (st.wan || 'wan'))
+          		]);
+
+          		var bars = (last.cpu || []).map(function(v, i) {
+          			return E('div', { 'class': 'xl-row' }, [
+          				E('span', { 'style': 'width:92px;font-size:13px;color:#C3CDD8' }, 'المعالج ' + (i + 1)),
+          				E('div', { 'class': 'xl-bar' }, E('i', { 'style': 'width:' + v + '%' })),
+          				E('span', { 'dir': 'ltr', 'style': 'width:56px;text-align:left;font-size:12px;color:#C3CDD8' }, v + '%')
+          			]);
+          		});
+          		if (st.core_rss_kb) {
+          			var pct = st.mem_total_kb ? Math.max(2, Math.round(100 * st.core_rss_kb / st.mem_total_kb)) : 5;
+          			bars.push(E('div', { 'class': 'xl-row' }, [
+          				E('span', { 'style': 'width:92px;font-size:13px;color:#C3CDD8' }, 'رام النواة'),
+          				E('div', { 'class': 'xl-bar' }, E('i', { 'style': 'width:' + pct + '%;background:var(--ok)' })),
+          				E('span', { 'dir': 'ltr', 'style': 'width:56px;text-align:left;font-size:12px;color:#C3CDD8' }, Math.round(st.core_rss_kb / 1024) + ' MB')
+          			]));
+          		}
+          		var coreNote = !st.core
+          			? E('div', { 'class': 'xl-note warn' }, 'النواة (xray) مو موجودة: من الإعدادات دوس "تحديث الأداة"')
+          			: (st.core_splice && st.splice_on
+          				? E('div', { 'class': 'xl-note' }, [ E('span', { 'class': 'xl-dot', 'style': 'color:var(--ok)' }), 'نواة Xray المخففة · التنزيل بدون نسخ (zero-copy) شغّال' ])
+          				: E('div', { 'class': 'xl-note warn' }, st.core_splice ? 'التنزيل بدون نسخ مطفي من الإعدادات' : 'النواة الحالية بدون التنزيل بدون نسخ (zero-copy)'));
+          		var router = E('div', { 'class': 'xl-card' }, [ E('h3', {}, 'الراوتر') ].concat(bars, [ coreNote ]));
+
+          		var mini = E('div', { 'style': 'display:grid;grid-template-columns:1fr 1fr;gap:12px' }, [
+          			E('button', { 'class': 'xl-card', 'style': 'text-align:right;cursor:pointer;color:inherit;font-family:inherit', 'click': function() { self.tab = 'servers'; self.draw(); } }, [
+          				E('span', { 'class': 'xl-mut' }, 'السيرفرات'),
+          				E('span', { 'style': 'font-size:20px;font-weight:700' }, String(st.servers || 0)),
+          				E('span', { 'class': 'xl-mut' }, best != null ? 'أسرع واحد ' + best + ' ms' : 'قيس البنك من قسم السيرفرات')
+          			]),
+          			E('button', { 'class': 'xl-card', 'style': 'text-align:right;cursor:pointer;color:inherit;font-family:inherit', 'click': function() { self.tab = 'iso'; self.draw(); } }, [
+          				E('span', { 'class': 'xl-mut' }, 'العزل'),
+          				E('span', { 'style': 'font-size:20px;font-weight:700' }, 'قريباً'),
+          				E('span', { 'class': 'xl-mut' }, 'ينضاف بالتحديث الجاي')
+          			])
+          		]);
+
+          		var cards = [ srvCard, speed, router, mini ];
+          		if (st.v2raya && st.enabled)
+          			cards.push(E('div', { 'class': 'xl-note warn' }, 'v2rayA منصّب بس مطفي. XLite يشتغل بداله.'));
+          		return E('div', { 'class': 'xl-grid' }, cards);
+          	},
+
+          	drawServers: function() {
+          		var self = this;
+          		var input = E('textarea', { 'class': 'xl-in', 'placeholder': 'الصق رابط vless:// (أو أكثر من رابط، كل واحد بسطر)', 'aria-label': 'روابط السيرفرات' });
+          		var add = E('button', { 'class': 'xl-btn pri', 'click': function() {
+          			var v = input.value.trim();
+          			if (!v) return;
+          			return callAdd(v).then(function(r) {
+          				var rep = (r && r.report) || [], okc = rep.filter(function(x) { return x.ok && !x.dup; }).length;
+          				var errs = rep.filter(function(x) { return !x.ok; });
+          				if (okc) ui.addNotification(null, E('p', {}, 'انضاف ' + okc + ' سيرفر'), 'info');
+          				if (rep.some(function(x) { return x.dup; })) ui.addNotification(null, E('p', {}, 'بعض الروابط موجودة أصلاً'), 'info');
+          				errs.forEach(function(e) { ui.addNotification(null, E('p', {}, e.error), 'warning'); });
+          				input.value = '';
+          				return self.reloadServers();
+          			});
+          		} }, 'إضافة');
+
+          		var list = E('div', { 'class': 'xl-list' }, this.servers.length ? this.servers.map(function(s) { return self.serverRow(s); })
+          			: [ E('div', { 'class': 'xl-card xl-mut' }, 'ما اكو سيرفرات بعد. الصق رابط فوق ودوس إضافة.') ]);
+
+          		return E('div', { 'style': 'display:flex;flex-direction:column;gap:12px' }, [
+          			E('label', { 'class': 'xl-mut', 'style': 'display:flex;flex-direction:column;gap:6px' }, [ 'إضافة سيرفر', input ]),
+          			E('div', { 'class': 'xl-row' }, [ add, E('button', { 'class': 'xl-btn', 'click': function() { return self.pingAll(); } }, 'قياس البنك للكل') ]),
+          			list
+          		]);
+          	},
+
+          	serverRow: function(s) {
+          		var self = this, ms = this.pings[s.id];
+          		var acts = E('div', { 'class': 'acts' }, [
+          			E('button', { 'class': 'xl-btn sm', 'click': function(ev) { ev.stopPropagation(); self.renameServer(s); } }, 'تسمية'),
+          			E('button', { 'class': 'xl-btn sm', 'click': function(ev) { ev.stopPropagation(); self.shareServer(s); } }, 'الرابط'),
+          			E('button', { 'class': 'xl-btn sm danger', 'click': function(ev) { ev.stopPropagation(); self.removeServer(s); } }, 'حذف')
+          		]);
+          		return E('div', { 'class': 'xl-srv' + (s.current ? ' cur' : ''), 'role': 'button', 'tabindex': '0',
+          			'aria-pressed': s.current ? 'true' : 'false',
+          			'click': function() { self.selectServer(s); },
+          			'keydown': function(ev) { if (ev.key === 'Enter') self.selectServer(s); }
+          		}, [
+          			E('div', { 'style': 'display:flex;flex-direction:column;gap:2px;min-width:0' }, [
+          				E('span', { 'class': 'n' }, s.name),
+          				E('span', { 'class': 'xl-mut' }, s.valid ? protoText(s) : (s.error || 'رابط غير صالح')),
+          				acts
+          			]),
+          			E('div', { 'style': 'display:flex;flex-direction:column;align-items:flex-end;gap:2px' }, [
+          				E('span', { 'class': 'xl-ping ' + pingClass(ms), 'data-ping': s.id, 'dir': 'ltr' }, pingText(ms)),
+          				E('span', { 'style': 'font-size:11px;color:var(--okt)' }, s.current ? 'مستخدم الآن' : '')
+          			])
+          		]);
+          	},
+
+          	reloadServers: function() {
+          		var self = this;
+          		return callServers().then(function(r) {
+          			self.servers = (r && r.servers) || [];
+          			self.draw();
+          		});
+          	},
+
+          	pingOne: function(id) {
+          		var self = this;
+          		return callPing(id).then(function(r) {
+          			self.pings[id] = r ? r.ms : -1;
+          			var el = self.root.querySelector('[data-ping="' + id + '"]');
+          			if (el) { el.textContent = pingText(self.pings[id]); el.className = 'xl-ping ' + pingClass(self.pings[id]); }
+          		});
+          	},
+
+          	pingAll: function() {
+          		var self = this, ids = this.servers.map(function(s) { return s.id; }), i = 0;
+          		ids.forEach(function(id) { delete self.pings[id]; });
+          		this.draw();
+          		function worker() {
+          			if (i >= ids.length) return Promise.resolve();
+          			return self.pingOne(ids[i++]).then(worker);
+          		}
+          		return Promise.all([ worker(), worker(), worker() ]);
+          	},
+
+          	selectServer: function(s) {
+          		var self = this;
+          		if (s.current && this.status.running) return;
+          		return callSelect(s.id).then(function() {
+          			ui.addNotification(null, E('p', {}, 'يتحوّل لـ ' + s.name + '…'), 'info');
+          			return self.reloadServers();
+          		});
+          	},
+
+          	renameServer: function(s) {
+          		var self = this, inp = E('input', { 'class': 'cbi-input-text', 'value': s.name, 'style': 'width:100%' });
+          		ui.showModal('تسمية السيرفر', [
+          			inp,
+          			E('div', { 'class': 'right', 'style': 'margin-top:12px' }, [
+          				E('button', { 'class': 'btn', 'click': ui.hideModal }, 'إلغاء'), ' ',
+          				E('button', { 'class': 'btn cbi-button-action', 'click': function() {
+          					return callRename(s.id, inp.value).then(function() { ui.hideModal(); return self.reloadServers(); });
+          				} }, 'حفظ')
+          			])
+          		]);
+          	},
+
+          	shareServer: function(s) {
+          		var self = this;
+          		return callLink(s.id).then(function(r) {
+          			var ta = E('textarea', { 'class': 'cbi-input-textarea', 'style': 'width:100%;min-height:90px;direction:ltr' }, r.link || '');
+          			ui.showModal('رابط السيرفر', [
+          				E('p', {}, 'تكدر تنسخه أو تعدله وتحفظ.'), ta,
+          				E('div', { 'class': 'right', 'style': 'margin-top:12px' }, [
+          					E('button', { 'class': 'btn', 'click': ui.hideModal }, 'إغلاق'), ' ',
+          					E('button', { 'class': 'btn', 'click': function() { ta.select(); try { document.execCommand('copy'); } catch (e) {} } }, 'نسخ'), ' ',
+          					E('button', { 'class': 'btn cbi-button-action', 'click': function() {
+          						return callEdit(s.id, ta.value.trim()).then(function(x) {
+          							if (!x || !x.ok) { ui.addNotification(null, E('p', {}, (x && x.error) || 'ما انحفظ'), 'warning'); return; }
+          							ui.hideModal(); return self.reloadServers();
+          						});
+          					} }, 'حفظ التعديل')
+          				])
+          			]);
+          		});
+          	},
+
+          	removeServer: function(s) {
+          		var self = this;
+          		ui.showModal('حذف السيرفر', [
+          			E('p', {}, 'تحذف "' + s.name + '"؟'),
+          			E('div', { 'class': 'right' }, [
+          				E('button', { 'class': 'btn', 'click': ui.hideModal }, 'لا'), ' ',
+          				E('button', { 'class': 'btn cbi-button-negative', 'click': function() {
+          					return callRemove(s.id).then(function() { ui.hideModal(); return self.reloadServers(); });
+          				} }, 'احذف')
+          			])
+          		]);
+          	},
+
+          	drawIso: function() {
+          		return E('div', { 'class': 'xl-card' }, [
+          			E('h3', {}, 'عزل التطبيقات'),
+          			E('p', { 'class': 'xl-mut', 'style': 'margin:0' }, 'هذا القسم ينضاف بالتحديث الجاي: ببجي وكلاش والمزرعة السعيدة وسناب وانستا وتلجرام وفيس وويز وبلي وتويتر وسبيد تيست، ويا وضع التعلّم والمخططات. يوصلك بزر "تحديث الأداة" بدون فلش.')
+          		]);
+          	},
+
+          	drawSettings: function() {
+          		var self = this, s = this.settings, ch = this.changes = {};
+          		function val(k) { return k in ch ? ch[k] : (s[k] || ''); }
+          		function sw(k, label, desc, onv, offv) {
+          			onv = onv || '1'; offv = offv == null ? '0' : offv;
+          			var b = E('button', { 'class': 'xl-sw' + (val(k) === onv ? ' on' : ''), 'role': 'switch', 'aria-label': label,
+          				'aria-checked': val(k) === onv ? 'true' : 'false',
+          				'click': function(ev) {
+          					var on = val(k) !== onv; ch[k] = on ? onv : offv;
+          					ev.currentTarget.classList.toggle('on', on); ev.currentTarget.setAttribute('aria-checked', on ? 'true' : 'false');
+          				} });
+          			return E('div', { 'class': 'xl-opt' }, [ E('div', { 'class': 't' }, [ E('span', {}, label), E('span', { 'class': 'xl-mut' }, desc) ]), b ]);
+          		}
+          		function sel(k, label, desc, opts) {
+          			var e = E('select', { 'aria-label': label, 'change': function(ev) { ch[k] = ev.target.value; } }, opts.map(function(o) {
+          				return E('option', { 'value': o[0], 'selected': val(k) === o[0] ? '' : null }, o[1]);
+          			}));
+          			return E('div', { 'class': 'xl-opt' }, [ E('div', { 'class': 't' }, [ E('span', {}, label), E('span', { 'class': 'xl-mut' }, desc) ]), e ]);
+          		}
+          		function txt(k, label, desc, type, ph) {
+          			var e = E('input', { 'type': type || 'text', 'value': val(k), 'placeholder': ph || '', 'aria-label': label, 'dir': 'ltr',
+          				'input': function(ev) { ch[k] = ev.target.value.trim(); } });
+          			return E('div', { 'class': 'xl-opt' }, [ E('div', { 'class': 't' }, [ E('span', {}, label), E('span', { 'class': 'xl-mut' }, desc) ]), e ]);
+          		}
+          		function group(title, rows) { return E('section', { 'class': 'xl-set' }, [ E('h3', {}, title) ].concat(rows)); }
+
+          		var ccOpts = [ [ '', 'لا تغيّر (' + (this.settingsInfo.tcp_cc_now || '?') + ')' ] ].concat(
+          			(this.settingsInfo.tcp_cc_avail || []).filter(function(x) { return x === 'cubic' || x === 'bbr'; }).map(function(x) { return [ x, x ]; }));
+
+          		var upLog = E('pre', { 'class': 'xl-pre', 'style': 'display:none' });
+          		var rel = this.status.release || {};
+
+          		var save = E('button', { 'class': 'xl-btn pri', 'click': function() {
+          			if (!Object.keys(ch).length) { ui.addNotification(null, E('p', {}, 'ما غيّرت شي'), 'info'); return; }
+          			return callSetSettings(ch).then(function(r) {
+          				if (r && r.ok) ui.addNotification(null, E('p', {}, 'انحفظ' + (self.status.enabled ? ' ويعيد التشغيل…' : '')), 'info');
+          				else ui.addNotification(null, E('p', {}, 'قيم غير صحيحة: ' + ((r && r.bad) || []).join(', ')), 'warning');
+          				return callSettings().then(function(x) { self.settings = (x && x.settings) || {}; self.settingsInfo = x || {}; self.draw(); });
+          			});
+          		} }, 'حفظ وتطبيق');
+
+          		return E('div', {}, [
+          			group('الـ VPN', [
+          				sel('transparent', 'البروكسي الشفاف', 'كل أجهزة الشبكة تمر من الـ VPN', [ [ 'all', 'شغال: بدون تقسيم' ], [ 'off', 'مطفي (socks/http بس)' ] ]),
+          				sel('impl', 'طريقة التحويل', 'tproxy (TCP و UDP) أو redirect (TCP بس)', [ [ 'tproxy', 'tproxy' ], [ 'redirect', 'redirect' ] ]),
+          				sw('dns', 'DNS عبر السيرفر', 'المواقع تنحل من خلال الـ VPN. إذا تطفيه ينحل مباشر', 'proxy', 'direct'),
+          				sel('ipv6', 'IPv6', 'تلقائي: يشتغل إذا الخط بيه IPv6', [ [ 'auto', 'تلقائي' ], [ '1', 'شغال' ], [ '0', 'مطفي' ] ]),
+          				sel('sniffing', 'Sniffing', 'يتعرف على الدومين من الاتصال', [ [ 'off', 'مطفي' ], [ 'http_tls', 'HTTP + TLS' ], [ 'http_tls_quic', 'HTTP + TLS + QUIC' ] ]),
+          				sel('tfo', 'TCP Fast Open', 'للاتصال بالسيرفر', [ [ 'default', 'الافتراضي' ], [ 'on', 'شغال' ], [ 'off', 'مطفي' ] ]),
+          				sw('mux', 'Multiplex', 'كل الاتصالات بقناة وحدة للسيرفر (يطفي التنزيل بدون نسخ)'),
+          				txt('mux_conc', 'عدد قنوات Multiplex', 'من 1 لـ 128', 'number'),
+          				sw('port_sharing', 'مشاركة البورت', 'بورتات socks/http تنفتح لأجهزة الشبكة'),
+          				sw('ip_forward', 'IP Forward', 'تمرير الحزم بين الشبكات'),
+          				txt('bypass', 'عناوين تطلع مباشر', 'IP أو نطاق، بينهم مسافة', 'text', '1.2.3.4 5.6.7.0/24')
+          			]),
+          			group('النواة (Xray المخففة)', [
+          				sw('splice', 'التنزيل بدون نسخ (zero-copy)', 'النواة تسلم التنزيل للكيرنل مباشرة'),
+          				sw('gomaxprocs', 'النواة على خيط واحد', 'GOMAXPROCS=1، أقل ضغط على المعالج', '1', ''),
+          				txt('gogc', 'GOGC', 'كل ما يزيد يقل شغل تنظيف الذاكرة (الافتراضي 200)', 'number'),
+          				sel('loglevel', 'السجل', 'تفاصيل سجل النواة', [ [ 'warning', 'تحذيرات' ], [ 'info', 'معلومات' ], [ 'debug', 'كل شي' ], [ 'error', 'أخطاء بس' ], [ 'none', 'بدون' ] ])
+          			]),
+          			group('سرعة الراوتر', [
+          				sw('early_exit', 'الخروج المبكر', 'اللي جاي من الإنترنت ورايح للشبكة ما يمر على قواعد البروكسي'),
+          				sel('tcp_cc', 'خوارزمية TCP', 'cubic أسرع من BBR على الراوترات الضعيفة', ccOpts)
+          			]),
+          			group('البورتات', [
+          				txt('tproxy_port', 'بورت tproxy', '', 'number'),
+          				txt('socks_port', 'بورت socks', '0 يطفيه', 'number'),
+          				txt('http_port', 'بورت http', '0 يطفيه', 'number')
+          			]),
+          			group('التحديث', [
+          				E('div', { 'class': 'xl-opt' }, [
+          					E('div', { 'class': 't' }, [ E('span', {}, 'الإصدار ' + (rel.version || '?')), E('span', { 'class': 'xl-mut' }, 'ينزل آخر نسخة ويحافظ على الإعدادات والسيرفرات') ]),
+          					E('button', { 'class': 'xl-btn sm', 'click': function(ev) {
+          						var b = ev.currentTarget; b.disabled = true; upLog.style.display = ''; upLog.textContent = 'يحدّث…';
+          						return callUpdate().then(function() {
+          							var n = 0, t = setInterval(function() {
+          								callUpdateState().then(function(r) {
+          									upLog.textContent = (r && r.log) || 'يحدّث…';
+          									if (/rc=\d/.test(upLog.textContent) || ++n > 90) {
+          										clearInterval(t); b.disabled = false;
+          										if (/rc=0/.test(upLog.textContent)) ui.addNotification(null, E('p', {}, 'تحدّث. حدّث الصفحة.'), 'info');
+          									}
+          								});
+          							}, 2000);
+          						});
+          					} }, 'تحديث الأداة')
+          				]),
+          				E('div', { 'style': 'padding:0 16px 12px' }, upLog),
+          				E('div', { 'class': 'xl-opt' }, [
+          					E('div', { 'class': 't' }, [ E('span', {}, 'السجل'), E('span', { 'class': 'xl-mut' }, 'آخر رسائل النواة والأداة') ]),
+          					E('button', { 'class': 'xl-btn sm', 'click': function() {
+          						return callLog().then(function(r) { ui.showModal('السجل', [ E('pre', { 'style': 'direction:ltr;white-space:pre-wrap;max-height:60vh;overflow:auto' }, (r && r.log) || ''), E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, 'إغلاق')) ]); });
+          					} }, 'عرض')
+          				])
+          			]),
+          			E('div', { 'class': 'xl-save' }, [ save ])
+          		]);
+          	},
+
+          	handleSave: null,
+          	handleSaveApply: null,
+          	handleReset: null
+          });
+          XLITE_FILE_9
+          mkdir -p "$(dirname "install.sh.in")"
+          cat > "install.sh.in" <<'XLITE_INSTALLER'
+          #!/bin/sh
+          # XLite installer / updater for OpenWrt 22.03+ (nftables)
+          #   wget -O- https://github.com/@REPO@/releases/download/@TAG@/install.sh | sh
+          # Installs the LuCI page (Services > XLite), the service and the xray core with the zero-copy download.
+          # Settings and servers in /etc/config/xlite are kept on update. v2rayA is left alone until you
+          # press "connect" in XLite (then it is stopped and disabled; "xlite uninstall" brings it back).
+          REPO='@REPO@'
+          TAG='@TAG@'
+          VERSION='@VERSION@'
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          SHARE=/usr/share/xlite
+          TMP=$(mktemp -d /tmp/xlite-inst.XXXXXX) || exit 1
+          trap 'rm -rf "$TMP"' EXIT
+
+          say() { echo "[XLite] $*"; }
+          die() { echo "[XLite] خطأ: $*"; exit 1; }
+
+          fetch() {   # url file
+          	if command -v curl > /dev/null 2>&1; then curl -fsSL --retry 2 --connect-timeout 20 -o "$2" "$1"
+          	else wget -q -T 30 -O "$2" "$1"; fi
+          }
+
+          [ -f /etc/openwrt_release ] || die "هذا مو OpenWrt"
+          command -v nft > /dev/null 2>&1 || die "nftables مو موجود: XLite يحتاج OpenWrt 22.03 أو أحدث"
+          command -v ucode > /dev/null 2>&1 || die "ucode مو موجود: XLite يحتاج OpenWrt 22.03 أو أحدث"
+
+          if command -v opkg > /dev/null 2>&1; then PM=opkg
+          elif command -v apk > /dev/null 2>&1; then PM=apk
+          else die "ما لكيت opkg ولا apk"; fi
+
+          have_pkg() {
+          	if [ $PM = opkg ]; then opkg status "$1" 2>/dev/null | grep -q '^Status:.* installed'
+          	else apk info -e "$1" > /dev/null 2>&1; fi
+          }
+
+          updated=0
+          pkg_install() {
+          	if [ $updated = 0 ]; then
+          		say "تحديث قوائم الحزم..."
+          		if [ $PM = opkg ]; then opkg update > "$TMP/pm.log" 2>&1; else apk update > "$TMP/pm.log" 2>&1; fi
+          		updated=1
+          	fi
+          	if [ $PM = opkg ]; then opkg install "$@" >> "$TMP/pm.log" 2>&1; else apk add "$@" >> "$TMP/pm.log" 2>&1; fi
+          }
+
+          # what XLite needs (most of it is already there with LuCI and fw4)
+          need=""
+          for p in ucode-mod-fs ucode-mod-uci rpcd-mod-ucode kmod-nft-tproxy curl ca-bundle; do
+          	have_pkg "$p" || need="$need $p"
+          done
+          ip -V 2>&1 | grep -q iproute2 || need="$need ip-full"
+          missing=""
+          if [ -n "$need" ]; then
+          	say "تنصيب المتطلبات:$need"
+          	for p in $need; do
+          		pkg_install "$p" || missing="$missing $p"
+          	done
+          fi
+          for p in ucode-mod-fs ucode-mod-uci rpcd-mod-ucode; do
+          	case " $missing " in *" $p "*) die "ما انصب $p (شوف الإنترنت أو مستودع الحزم)";; esac
+          done
+          TPROXY=1
+          case " $missing " in *" kmod-nft-tproxy "*)
+          	TPROXY=0
+          	say "تنبيه: kmod-nft-tproxy ما انصب، فالتحويل يكون redirect (TCP بس) لحد ما ينصب"
+          	command -v mx2000-kmods > /dev/null 2>&1 && say "على MX2000: شغّل mx2000-kmods ثم opkg install kmod-nft-tproxy";;
+          esac
+
+          # the tool
+          say "تنزيل XLite $VERSION..."
+          fetch "$BASE/xlite.tar.gz" "$TMP/xlite.tar.gz" || die "التنزيل فشل (الإنترنت؟)"
+          fetch "$BASE/sha256sums" "$TMP/sha256sums" || die "التنزيل فشل (sha256sums)"
+          check() {   # file asset-name
+          	command -v sha256sum > /dev/null 2>&1 || return 0
+          	want=$(awk -v f="$2" '$2 == f || $2 == "*" f {print $1}' "$TMP/sha256sums")
+          	[ -n "$want" ] && [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$want" ]
+          }
+          check "$TMP/xlite.tar.gz" xlite.tar.gz || die "الملف المنزل تالف (sha256)"
+
+          # the core: the zero-copy xray if the router already has one (the MX2000 firmware does), else ours for this CPU
+          ARCH=""
+          if [ $PM = opkg ]; then ARCH=$(opkg print-architecture 2>/dev/null | awk '$2 !~ /^(all|noarch)$/ {a = $2} END {print a}')
+          else ARCH=$(apk --print-arch 2>/dev/null); fi
+          [ -n "$ARCH" ] || ARCH=$(uname -m)
+          case "$ARCH" in
+          aarch64*|arm64*) CORE=arm64 ;;
+          arm_arm1176*|armv6*) CORE=armv6 ;;
+          arm_cortex-a*_neon*|arm_cortex-a*_vfp*|armv7*) CORE=armv7 ;;
+          arm*) CORE=armv5 ;;
+          mipsel_*|mipsle*) CORE=mipsle ;;
+          mips64el_*) CORE=mips64le ;;
+          mips64_*) CORE=mips64 ;;
+          mips_*|mips) CORE=mips ;;
+          x86_64*) CORE=amd64 ;;
+          i386*|i486*|i586*|i686*|x86) CORE=386 ;;
+          riscv64*) CORE=riscv64 ;;
+          loongarch64*) CORE=loong64 ;;
+          *) CORE="" ;;
+          esac
+
+          core_ok() { [ -x "$1" ] && grep -aq 'VLESS downlink splice' "$1"; }
+          mkdir -p $SHARE/bin
+          CORE_NOTE=""
+          if core_ok /usr/bin/xray; then
+          	rm -f $SHARE/bin/xray $SHARE/bin/xray.gz
+          	CORE_NOTE="النواة المخففة الموجودة بالراوتر (/usr/bin/xray)"
+          elif [ -n "$CORE" ] && [ -z "$XLITE_SKIP_CORE" ]; then
+          	have=""
+          	[ -f $SHARE/bin/core.sum ] && have=$(cat $SHARE/bin/core.sum)
+          	want=$(awk -v f="xray-$CORE.gz" '$2 == f {print $1}' "$TMP/sha256sums")
+          	if [ -n "$want" ] && [ "$have" = "$want" ] && { [ -x $SHARE/bin/xray ] || [ -s $SHARE/bin/xray.gz ]; }; then
+          		CORE_NOTE="النواة المخففة ($CORE) بدون تغيير"
+          	else
+          		say "تنزيل النواة المخففة ($CORE)..."
+          		fetch "$BASE/xray-$CORE.gz" "$TMP/xray.gz" || die "تنزيل النواة فشل"
+          		check "$TMP/xray.gz" "xray-$CORE.gz" || die "النواة المنزلة تالفة (sha256)"
+          		gz=$(($(wc -c < "$TMP/xray.gz") / 1024))
+          		free=$(df -k $SHARE 2>/dev/null | awk 'NR == 2 {print $4}')
+          		[ -f $SHARE/bin/xray ] && free=$((free + $(wc -c < $SHARE/bin/xray) / 1024))
+          		[ -f $SHARE/bin/xray.gz ] && free=$((free + $(wc -c < $SHARE/bin/xray.gz) / 1024))
+          		rm -f $SHARE/bin/xray $SHARE/bin/xray.gz
+          		if [ "${free:-0}" -gt $((gz * 4 + 2048)) ]; then
+          			gzip -dc "$TMP/xray.gz" > $SHARE/bin/xray && chmod 755 $SHARE/bin/xray || die "ما كدرت أفك النواة (المساحة؟)"
+          			CORE_NOTE="النواة المخففة ($CORE) على الذاكرة"
+          		elif [ "${free:-0}" -gt $((gz + 1024)) ]; then
+          			# small flash: kept compressed, unpacked to RAM at each start
+          			cp "$TMP/xray.gz" $SHARE/bin/xray.gz || die "ما كدرت أخزن النواة"
+          			CORE_NOTE="النواة المخففة ($CORE) مضغوطة، تنفك على الرام وقت التشغيل (الذاكرة صغيرة)"
+          		elif [ -x /usr/bin/xray ]; then
+          			CORE_NOTE="ماكو مساحة للنواة المخففة: يستخدم /usr/bin/xray العادية (بدون zero-copy)"
+          		else
+          			die "ماكو مساحة للنواة (تحتاج تقريباً $((gz / 1024 + 1)) ميجا)"
+          		fi
+          		echo "$want" > $SHARE/bin/core.sum
+          	fi
+          elif [ -x /usr/bin/xray ]; then
+          	CORE_NOTE="المعالج ($ARCH) ما عنده نواة مخففة: يستخدم /usr/bin/xray العادية"
+          else
+          	die "ماكو نواة xray لهذا المعالج ($ARCH): نصب xray-core أول"
+          fi
+
+          # files (the list is kept for "xlite uninstall")
+          tar -tzf "$TMP/xlite.tar.gz" | grep -v '/$' | sed 's|^\./|/|; s|^\([^/]\)|/\1|' > "$TMP/files"
+          tar -xzf "$TMP/xlite.tar.gz" -C / || die "ما كدرت أنصب الملفات (المساحة؟)"
+          cp "$TMP/files" $SHARE/files
+          chmod 755 /usr/bin/xlite /etc/init.d/xlite
+          printf 'REPO=%s\nTAG=%s\nVERSION=%s\n' "$REPO" "$TAG" "$VERSION" > $SHARE/release
+
+          # settings: add what is missing, keep the rest
+          [ -f /etc/config/xlite ] || : > /etc/config/xlite
+          uci -q get xlite.main > /dev/null || uci -q set xlite.main=xlite
+          while IFS='=' read -r k v; do
+          	case "$k" in ''|\#*) continue ;; esac
+          	uci -q get "xlite.main.$k" > /dev/null || uci -q set "xlite.main.$k=$v"
+          done < $SHARE/defaults
+          [ $TPROXY = 0 ] && uci -q set xlite.main.impl=redirect
+          uci -q commit xlite
+
+          /etc/init.d/xlite enable
+          rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/* 2>/dev/null
+          /etc/init.d/rpcd restart > /dev/null 2>&1
+          sleep 1
+
+          if [ "$(uci -q get xlite.main.enabled)" = 1 ]; then
+          	/etc/init.d/xlite restart
+          	say "XLite اشتغل من جديد"
+          fi
+          say "تم: XLite $VERSION"
+          say "$CORE_NOTE"
+          if [ -z "$XLITE_UPDATE" ]; then
+          	say "افتح LuCI: Services ← XLite، ضيف رابط السيرفر، ودوس الزر حتى يصير متصل."
+          	[ -x /etc/init.d/v2raya ] && say "v2rayA يبقى شغال لحد ما تدوس متصل بـ XLite (ساعتها ينطفي وحده)."
+          fi
+          exit 0
+          XLITE_INSTALLER
+          find src -type f | sort
+
+      - name: "2. Syntax checks"
+        run: |
+          set -e
+          for f in src/usr/bin/xlite src/etc/init.d/xlite src/etc/hotplug.d/iface/90-xlite install.sh.in; do sh -n "$f"; bash -n "$f"; done
+          for f in src/usr/share/rpcd/acl.d/luci-app-xlite.json src/usr/share/luci/menu.d/luci-app-xlite.json; do python3 -m json.tool "$f" > /dev/null; done
+          node -e "new Function('view','rpc','ui','poll','L','E', require('fs').readFileSync('src/www/luci-static/resources/view/xlite/main.js','utf8').replace(/^'require [a-z]+';$/mg,''))"
+          echo "- syntax: shell, json, LuCI view ok" >> out/summary.md
+
+      - name: "3. Test files"
+        run: |
+          mkdir -p "$(dirname "t/xray-900-vless-downlink-splice.patch")"
+          cat > "t/xray-900-vless-downlink-splice.patch" <<'XLITE_PATCH'
+          From: mx2000 build
+          Subject: [PATCH] VLESS: zero-copy downlink for plain VLESS over RAW TCP
+
+          A VLESS connection without flow on the RAW TCP transport without TLS/REALITY
+          (optionally with the HTTP header camouflage) carries the target's bytes
+          unchanged after the response header. When the inbound is dokodemo-door
+          (tproxy/redirect), splice(2) the rest of the response from the server
+          socket to the client socket inside the kernel. Everything else keeps the
+          normal path. XRAY_VLESS_SPLICE=off disables it at run time.
+          ---
+          diff --git a/proxy/vless/outbound/outbound.go b/proxy/vless/outbound/outbound.go
+          index e1a727e..43eb027 100644
+          --- a/proxy/vless/outbound/outbound.go
+          +++ b/proxy/vless/outbound/outbound.go
+          @@ -258,6 +258,15 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+           			return errors.New("failed to decode response header").Base(err).AtInfo()
+           		}
+           
+          +		if requestAddons.Flow == "" && responseAddons.Flow == "" && request.Command == protocol.RequestCommandTCP {
+          +			if s := newDownlinkSplice(ctx, conn); s != nil {
+          +				if err := s.run(ctx, clientWriter, timer); err != nil {
+          +					return errors.New("failed to transfer response payload").Base(err).AtInfo()
+          +				}
+          +				return nil
+          +			}
+          +		}
+          +
+           		// default: serverReader := buf.NewReader(conn)
+           		serverReader := encoding.DecodeBodyAddons(conn, request, responseAddons)
+           		if requestAddons.Flow == vless.XRV {
+          diff --git a/proxy/vless/outbound/splice_linux.go b/proxy/vless/outbound/splice_linux.go
+          new file mode 100644
+          index 0000000..1035429
+          --- /dev/null
+          +++ b/proxy/vless/outbound/splice_linux.go
+          @@ -0,0 +1,224 @@
+          +package outbound
+          +
+          +// Zero-copy downlink for plain VLESS.
+          +//
+          +// A VLESS connection without flow on the RAW TCP transport without TLS or
+          +// REALITY (optionally wrapped in the HTTP header camouflage) carries the
+          +// target's bytes unchanged after the response header. When the client side
+          +// is a plain TCP socket that also passes bytes through unchanged
+          +// (dokodemo-door, used by tproxy and redirect), the rest of the response can
+          +// go from the server socket to the client socket inside the kernel with
+          +// splice(2) instead of being read into Go buffers, handed through a pipe to
+          +// another goroutine and written out again. Everything else (flows, TLS,
+          +// REALITY, other transports, UDP, mux, proxy chains that change the bytes,
+          +// other inbounds) keeps the normal path, and so does the uplink.
+          +//
+          +// XRAY_VLESS_SPLICE=off turns it off at run time.
+          +
+          +import (
+          +	"context"
+          +	"io"
+          +	"syscall"
+          +
+          +	"github.com/xtls/xray-core/app/dispatcher"
+          +	"github.com/xtls/xray-core/common/buf"
+          +	"github.com/xtls/xray-core/common/errors"
+          +	"github.com/xtls/xray-core/common/net"
+          +	"github.com/xtls/xray-core/common/platform"
+          +	"github.com/xtls/xray-core/common/session"
+          +	"github.com/xtls/xray-core/common/signal"
+          +	"github.com/xtls/xray-core/features/stats"
+          +	httpheader "github.com/xtls/xray-core/transport/internet/headers/http"
+          +	"github.com/xtls/xray-core/transport/internet/stat"
+          +	"golang.org/x/sys/unix"
+          +)
+          +
+          +// spliceRound caps one splice round, so that the idle timers and the traffic
+          +// counters keep moving while a slow client drains a long transfer.
+          +const spliceRound = 32 * 1024
+          +
+          +var downlinkSpliceEnabled = func() bool {
+          +	switch platform.NewEnvFlag("xray.vless.splice").GetValue(func() string { return "" }) {
+          +	case "0", "off", "no", "false", "disable", "disabled":
+          +		return false
+          +	}
+          +	return true
+          +}()
+          +
+          +type downlinkSplice struct {
+          +	src        *net.TCPConn // socket to the VLESS server
+          +	dst        *net.TCPConn // socket of the client
+          +	pending    *buf.Buffer  // read past the HTTP header but not sent yet
+          +	srcCounter stats.Counter
+          +	dstCounter stats.Counter
+          +	inTimer    *signal.ActivityTimer
+          +}
+          +
+          +// newDownlinkSplice returns nil unless every byte the server sends from now
+          +// on can go to the client socket unchanged. Call it right after the VLESS
+          +// response header has been read, from the goroutine that reads conn.
+          +func newDownlinkSplice(ctx context.Context, conn net.Conn) *downlinkSplice {
+          +	if !downlinkSpliceEnabled {
+          +		return nil
+          +	}
+          +	inbound := session.InboundFromContext(ctx)
+          +	if inbound == nil || inbound.Conn == nil || inbound.CanSpliceCopy != 1 {
+          +		return nil
+          +	}
+          +	outbounds := session.OutboundsFromContext(ctx)
+          +	if len(outbounds) == 0 {
+          +		return nil
+          +	}
+          +	for _, ob := range outbounds[:len(outbounds)-1] {
+          +		if ob.CanSpliceCopy != 1 { // another proxy in the chain needs the bytes
+          +			return nil
+          +		}
+          +	}
+          +	s := &downlinkSplice{inTimer: inbound.Timer}
+          +	var ok bool
+          +	var c net.Conn = conn
+          +	if sc, isCounter := c.(*stat.CounterConnection); isCounter {
+          +		c, s.srcCounter = sc.Connection, sc.ReadCounter
+          +	}
+          +	header, _ := c.(*httpheader.Conn)
+          +	if header != nil {
+          +		c = header.Conn
+          +	}
+          +	if s.src, ok = c.(*net.TCPConn); !ok {
+          +		return nil // TLS, REALITY, another transport or a dialer proxy
+          +	}
+          +	c = inbound.Conn
+          +	if sc, isCounter := c.(*stat.CounterConnection); isCounter {
+          +		c, s.dstCounter = sc.Connection, sc.WriteCounter
+          +	}
+          +	if s.dst, ok = c.(*net.TCPConn); !ok {
+          +		return nil
+          +	}
+          +	if header != nil {
+          +		if s.pending, ok = header.TakeReadBuffer(); !ok {
+          +			return nil
+          +		}
+          +	}
+          +	return s
+          +}
+          +
+          +// run moves the rest of the response to the client. It returns nil once the
+          +// server has finished sending, or the first error.
+          +func (s *downlinkSplice) run(ctx context.Context, writer buf.Writer, timer *signal.ActivityTimer) error {
+          +	statWriter, _ := writer.(*dispatcher.SizeStatWriter)
+          +	count := func(n int64) {
+          +		if n <= 0 {
+          +			return
+          +		}
+          +		if s.srcCounter != nil {
+          +			s.srcCounter.Add(n) // outbound stats
+          +		}
+          +		if s.dstCounter != nil {
+          +			s.dstCounter.Add(n) // inbound stats
+          +		}
+          +		if statWriter != nil {
+          +			statWriter.Counter.Add(n) // user stats
+          +		}
+          +		timer.Update()
+          +		if s.inTimer != nil {
+          +			s.inTimer.Update()
+          +		}
+          +	}
+          +	if s.pending != nil {
+          +		n, err := s.dst.Write(s.pending.Bytes())
+          +		s.pending.Release()
+          +		s.pending = nil
+          +		count(int64(n))
+          +		if err != nil {
+          +			return err
+          +		}
+          +	}
+          +	rc, err := s.src.SyscallConn()
+          +	if err != nil {
+          +		return err
+          +	}
+          +	errors.LogDebug(ctx, "VLESS downlink splice")
+          +	// No data passes the copy loops that normally refresh the idle timers any
+          +	// more; every round below refreshes them instead, so the timeouts keep
+          +	// their meaning (a quiet connection still expires, a half-closed one
+          +	// still ends once the data stops).
+          +	lr := &io.LimitedReader{R: s.src}
+          +	for {
+          +		avail, err := waitData(rc)
+          +		if err != nil {
+          +			return err
+          +		}
+          +		if avail == 0 {
+          +			return nil // the server has finished sending
+          +		}
+          +		if avail < 0 {
+          +			// readable data the kernel does not count as queued (urgent
+          +			// data): one round the plain way, which skips it like a read does
+          +			b := buf.New()
+          +			n, rerr := b.ReadFrom(s.src)
+          +			if n > 0 {
+          +				_, err = s.dst.Write(b.Bytes())
+          +				count(n)
+          +			}
+          +			b.Release()
+          +			if err != nil {
+          +				return err
+          +			}
+          +			if rerr == io.EOF {
+          +				return nil
+          +			}
+          +			if rerr != nil {
+          +				return rerr
+          +			}
+          +			continue
+          +		}
+          +		if avail > spliceRound {
+          +			avail = spliceRound
+          +		}
+          +		// exactly what is queued already: ReadFrom splices it through a pooled
+          +		// pipe and returns without waiting, so a quiet connection holds no pipe
+          +		lr.N = int64(avail)
+          +		n, err := s.dst.ReadFrom(lr)
+          +		count(n)
+          +		if err != nil {
+          +			return err
+          +		}
+          +		if lr.N > 0 {
+          +			return nil // EOF came early
+          +		}
+          +	}
+          +}
+          +
+          +// waitData waits until the socket has data or the peer has closed. It
+          +// returns how many bytes are queued, 0 at EOF, or -1 for readable data that
+          +// is not counted as queued.
+          +func waitData(rc syscall.RawConn) (int, error) {
+          +	var avail int
+          +	var serr error
+          +	err := rc.Read(func(fd uintptr) bool {
+          +		for i := 0; ; i++ {
+          +			if avail, serr = unix.IoctlGetInt(int(fd), unix.SIOCINQ); serr != nil || avail > 0 {
+          +				return true
+          +			}
+          +			var b [1]byte
+          +			n, _, e := unix.Recvfrom(int(fd), b[:], unix.MSG_PEEK|unix.MSG_DONTWAIT)
+          +			switch {
+          +			case e == unix.EAGAIN:
+          +				return false // nothing yet: wait until it is readable
+          +			case e != nil && e != unix.EINTR:
+          +				serr = e
+          +				return true
+          +			case e == nil && n == 0:
+          +				return true // EOF
+          +			case i > 0:
+          +				avail = -1 // still not counted after a second look
+          +				return true
+          +			}
+          +			// data came in between the two calls, or EINTR: look again
+          +		}
+          +	})
+          +	if err == nil {
+          +		err = serr
+          +	}
+          +	return avail, err
+          +}
+          diff --git a/proxy/vless/outbound/splice_other.go b/proxy/vless/outbound/splice_other.go
+          new file mode 100644
+          index 0000000..2496d5e
+          --- /dev/null
+          +++ b/proxy/vless/outbound/splice_other.go
+          @@ -0,0 +1,18 @@
+          +//go:build !linux
+          +
+          +package outbound
+          +
+          +import (
+          +	"context"
+          +
+          +	"github.com/xtls/xray-core/common/buf"
+          +	"github.com/xtls/xray-core/common/net"
+          +	"github.com/xtls/xray-core/common/signal"
+          +)
+          +
+          +// The zero-copy downlink (splice_linux.go) needs splice(2).
+          +type downlinkSplice struct{}
+          +
+          +func newDownlinkSplice(context.Context, net.Conn) *downlinkSplice { return nil }
+          +
+          +func (*downlinkSplice) run(context.Context, buf.Writer, *signal.ActivityTimer) error { return nil }
+          diff --git a/transport/internet/headers/http/http.go b/transport/internet/headers/http/http.go
+          index 3c1ff06..99abd7f 100644
+          --- a/transport/internet/headers/http/http.go
+          +++ b/transport/internet/headers/http/http.go
+          @@ -202,6 +202,23 @@ func (c *Conn) Read(b []byte) (int, error) {
+           	return c.Conn.Read(b)
+           }
+           
+          +// TakeReadBuffer is for a caller that goes on reading the underlying
+          +// connection directly once the HTTP header has been read: it hands over the
+          +// bytes already read past the header (nil when there are none). It returns
+          +// false, and changes nothing, while the header has not been read yet.
+          +func (c *Conn) TakeReadBuffer() (*buf.Buffer, bool) {
+          +	if c.oneTimeReader != nil {
+          +		return nil, false
+          +	}
+          +	b := c.readBuffer
+          +	c.readBuffer = nil
+          +	if b.IsEmpty() {
+          +		b.Release()
+          +		return nil, true
+          +	}
+          +	return b, true
+          +}
+          +
+           // Write implements io.Writer.
+           func (c *Conn) Write(b []byte) (int, error) {
+           	if c.oneTimeWriter != nil {
+          XLITE_PATCH
+          mkdir -p "$(dirname "t/run.sh")"
+          cat > "t/run.sh" <<'XLITE_RUNSH'
+          #!/bin/bash
+          # run.sh XRAY VARIANT MODE   end-to-end test of one xray binary on this machine
+          #   VARIANT  http  VLESS + RAW TCP + HTTP header camouflage, no TLS (the router's case)
+          #            none  VLESS + RAW TCP, no header
+          #            tls   VLESS + TCP + TLS            (must keep the normal path)
+          #            mux   VLESS + HTTP header + mux    (must keep the normal path)
+          #   MODE     full | quick | cpu (one big download, prints the client's CPU time)
+          #   EXPECT=yes|no  the client must / must not take the zero-copy path
+          # Topology: e2etool server <- xray server (VLESS inbound, freedom) <- xray client
+          # (dokodemo-door inbounds = what tproxy uses, VLESS outbound) <- e2etool client.
+          # Every payload is checked byte by byte.
+          set -u
+          X=$(readlink -f "$1"); V=$2; MODE=${3:-full}
+          D=$(dirname "$(readlink -f "$0")")
+          T=${E2ETOOL:-$D/e2etool}
+          W=$(mktemp -d "${TMPDIR:-/tmp}/xe2e.XXXX")
+          UUID=6a3c0e5e-6f1a-4d55-9d2a-8c1f0b2e7d41
+          cleanup() { kill $(jobs -p) 2>/dev/null; wait 2>/dev/null; }
+          trap cleanup EXIT
+          trap 'exit 1' INT TERM   # runs the EXIT trap: no server left on the test ports
+
+          HDR_REQ='{"version":"1.1","method":"GET","path":["/video"],"headers":{"Host":["www.example.com"],"User-Agent":["Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.75 Safari/537.36"],"Accept-Encoding":["gzip, deflate"],"Connection":["keep-alive"],"Pragma":"no-cache"}}'
+          HDR_RESP='{"version":"1.1","status":"200","reason":"OK","headers":{"Content-Type":["application/octet-stream","video/mpeg"],"Transfer-Encoding":["chunked"],"Connection":["keep-alive"],"Pragma":"no-cache"}}'
+          case $V in
+          http|mux) SS='{"network":"tcp","security":"none","tcpSettings":{"header":{"type":"http","request":'$HDR_REQ',"response":'$HDR_RESP'}}}' ;;
+          none) SS='{"network":"tcp","security":"none"}' ;;
+          tls)
+          	"$X" tls cert -domain=test.local -file="$W/c" >/dev/null 2>&1 || { echo "FAIL cannot make a test certificate"; exit 1; }
+          	SS='{"network":"tcp","security":"tls","tlsSettings":{"certificates":[{"certificateFile":"'$W'/c_cert.pem","keyFile":"'$W'/c_key.pem"}]}}' ;;
+          *) echo "FAIL unknown variant $V"; exit 2 ;;
+          esac
+          CS=$SS
+          [ "$V" = tls ] && CS='{"network":"tcp","security":"tls","tlsSettings":{"serverName":"test.local","allowInsecure":true}}'
+          MUX='{"enabled":false}'
+          [ "$V" = mux ] && MUX='{"enabled":true,"concurrency":8}'
+          # v2rayA marks the outbound sockets (needs CAP_NET_ADMIN, so only when allowed here)
+          python3 -c 'import socket;s=socket.socket();s.setsockopt(socket.SOL_SOCKET,36,128)' 2>/dev/null && CS=${CS%\}}',"sockopt":{"mark":128}}'
+
+          cat > "$W/server.json" <<J
+          {"log":{"loglevel":"warning","access":"none","error":"$W/server.log"},
+           "inbounds":[{"listen":"127.0.0.1","port":18443,"protocol":"vless","settings":{"clients":[{"id":"$UUID"}],"decryption":"none"},"streamSettings":$SS}],
+           "outbounds":[{"protocol":"freedom"}]}
+          J
+          cat > "$W/client.json" <<J
+          {"log":{"loglevel":"debug","access":"none","error":"$W/client.log"},
+           "inbounds":[
+            {"tag":"transparent","listen":"127.0.0.1","port":18081,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":18080,"network":"tcp,udp"},"sniffing":{"enabled":true,"destOverride":["http","tls"]}},
+            {"tag":"raw","listen":"127.0.0.1","port":18091,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":18090,"network":"tcp"}}],
+           "outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":18443,"users":[{"id":"$UUID","encryption":"none","flow":""}]}]},"streamSettings":$CS,"mux":$MUX}]}
+          J
+          "$T" serve -http 127.0.0.1:18080 -raw 127.0.0.1:18090 > "$W/tool.out" 2>&1 &
+          # readv in the stock server misses a reset from the target (after any error it
+          # waits for readability again), which the rst test would see as a hang
+          XRAY_BUF_READV=disable "$X" run -c "$W/server.json" > "$W/server.out" 2>&1 &
+          "$X" run -c "$W/client.json" > "$W/client.out" 2>&1 &
+          CPID=$!
+          up=0
+          for i in $(seq 100); do
+          	if (exec 3<>/dev/tcp/127.0.0.1/18081) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/18443) 2>/dev/null \
+          	   && (exec 3<>/dev/tcp/127.0.0.1/18080) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/18090) 2>/dev/null; then up=1; break; fi
+          	sleep 0.1
+          done
+          [ $up = 1 ] || { echo "FAIL the test servers did not start"; cat "$W"/*.out | tail -n 20; exit 1; }
+          sleep 0.5   # the probes above were connections too: let them end
+          B=http://127.0.0.1:18081
+          R=127.0.0.1:18091
+          socks() { ls -l /proc/$CPID/fd 2>/dev/null | grep -c socket:; }
+          cpu() { awk '{print $14 "/" $15}' /proc/$CPID/stat; }   # client xray utime/stime in clock ticks
+          rc=0
+          finish() {
+          	# every connection must be gone a few seconds later (the client side idle
+          	# timers close a finished connection within about 2 s)
+          	for i in $(seq 40); do [ "$(socks)" -le $((S0 + 4)) ] && break; sleep 0.2; done
+          	S1=$(socks)
+          	[ "$S1" -le $((S0 + 4)) ] || { echo "FAIL $((S1 - S0)) client sockets still open 8 s after the last test"; rc=1; }
+          	N=$(grep -c "VLESS downlink splice" "$W/client.log")
+          	kill -0 $CPID 2>/dev/null || { echo "FAIL the client xray died"; rc=1; }
+          	if grep -qE "panic|fatal error|DATA RACE" "$W"/*.out "$W"/*.log; then
+          		echo "FAIL xray crashed:"; grep -E -A3 "panic|fatal error|DATA RACE" "$W"/*.out "$W"/*.log | head -n 20; rc=1
+          	fi
+          	case ${EXPECT:-} in
+          	yes) [ "$N" -gt 0 ] || { echo "FAIL no connection took the zero-copy path"; rc=1; } ;;
+          	no) [ "$N" -eq 0 ] || { echo "FAIL $N connections took the zero-copy path"; rc=1; } ;;
+          	esac
+          	echo "RESULT variant=$V mode=$MODE zero_copy_connections=$N client_sockets_left=$((S1 - S0))"
+          	[ $rc = 0 ] && rm -rf "$W" || echo "logs kept in $W"
+          	exit $rc
+          }
+          t() { "$T" "$@" && return 0; echo "FAIL in: e2etool $*"; rc=1; finish; }   # stop at the first failure
+          S0=$(socks)
+          case $MODE in
+          cpu)
+          	a=$(cpu); t big -base $B -size $((512 << 20)); b=$(cpu)
+          	echo "$a $b" | awk -v hz=$(getconf CLK_TCK) '{ split($1, x, "/"); split($2, y, "/"); g = 0.5 * hz
+          		printf "RESULT cpu_user=%.2f cpu_kernel=%.2f (client xray, seconds per GB)\n", (y[1] - x[1]) / g, (y[2] - x[2]) / g }'
+          	;;
+          quick)
+          	t big -base $B -size $((256 << 20))
+          	t small -base $B -n 100
+          	t keepalive -base $B -n 30
+          	[ "$V" = mux ] || t halfclose -raw $R -size $((32 << 20))   # stock mux drops half-closed streams
+          	;;
+          full)
+          	t big -base $B -size $((1024 << 20))
+          	t small -base $B -n 300
+          	t keepalive -base $B -n 60
+          	t parallel -base $B -n 16 -size $((64 << 20))
+          	t upload -base $B -size $((128 << 20))
+          	if [ "$V" != mux ]; then
+          		t halfclose -raw $R -size $((64 << 20))
+          		t halfclose -raw $R -size $((2 << 20)) -chunk $((256 << 10)) -ms 400
+          		t halfclose -raw $R -size 3000 -chunk 200 -ms 400
+          	fi
+          	t trickle -raw $R -size 2000 -chunk 200 -ms 1500
+          	t abort -raw $R -n 40
+          	t slowread -raw $R -size $((8 << 20)) -chunk $((256 << 10)) -ms 50
+          	t echo -raw $R -size $((64 << 20))
+          	t rst -raw $R -size $((3 << 20)) -n 10
+          	t idle -base $B -n 40 $CPID
+          	t big -base $B -size $((256 << 20))
+          	;;
+          *) echo "FAIL unknown mode $MODE"; exit 2 ;;
+          esac
+          finish
+          XLITE_RUNSH
+          chmod 755 "t/run.sh"
+          mkdir -p "$(dirname "t/urg.sh")"
+          cat > "t/urg.sh" <<'XLITE_URGSH'
+          #!/bin/bash
+          # urg.sh XRAY   a VLESS server that puts a TCP urgent byte in the middle of the
+          # response: the client must deliver the stream without it (as a plain read
+          # does), without hanging or spinning.
+          set -u
+          X=$(readlink -f "$1"); D=$(dirname "$(readlink -f "$0")"); T=${E2ETOOL:-$D/e2etool}
+          W=$(mktemp -d "${TMPDIR:-/tmp}/xurg.XXXX")
+          trap 'kill $(jobs -p) 2>/dev/null; wait 2>/dev/null' EXIT
+          trap 'exit 1' INT TERM
+          cat > "$W/fake.py" <<'P'
+          import socket, sys, threading, time
+          x = (31 * 0x9E3779B97F4A7C15 + 0x1234567) & (2**64 - 1); out = bytearray()
+          while len(out) < 300000:             # the e2etool stream for seed 31
+              x ^= x >> 12; x ^= (x << 25) & (2**64 - 1); x ^= x >> 27
+              out += ((x * 2685821657736338717) & (2**64 - 1)).to_bytes(8, 'little')
+          data = bytes(out[:300000]); half = len(data) // 2
+          ls = socket.socket(); ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          ls.bind(('127.0.0.1', 18444)); ls.listen(16)
+          def serve(c):
+              b = b''
+              while b'\r\n\r\n' not in b:
+                  d = c.recv(65536)
+                  if not d: return
+                  b += d
+              time.sleep(0.2)                  # the VLESS request and its first payload: ignored
+              c.setblocking(False)
+              try:
+                  while c.recv(65536): pass
+              except BlockingIOError: pass
+              c.setblocking(True)
+              c.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: video/mpeg\r\n\r\n' + b'\x00\x00' + data[:half])
+              time.sleep(0.2); c.send(b'!', socket.MSG_OOB)
+              time.sleep(0.2); c.sendall(data[half:])
+              time.sleep(0.5); c.close()
+          while True:
+              c, _ = ls.accept()
+              threading.Thread(target=serve, args=(c,), daemon=True).start()
+          P
+          python3 "$W/fake.py" &
+          cat > "$W/client.json" <<J
+          {"log":{"loglevel":"debug","access":"none","error":"$W/client.log"},
+           "inbounds":[{"listen":"127.0.0.1","port":18091,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":18090,"network":"tcp"}}],
+           "outbounds":[{"protocol":"vless","settings":{"vnext":[{"address":"127.0.0.1","port":18444,"users":[{"id":"6a3c0e5e-6f1a-4d55-9d2a-8c1f0b2e7d41","encryption":"none"}]}]},
+            "streamSettings":{"network":"tcp","tcpSettings":{"header":{"type":"http","request":{"path":["/"]}}}}}]}
+          J
+          "$X" run -c "$W/client.json" > "$W/client.out" 2>&1 &
+          for i in $(seq 100); do (exec 3<>/dev/tcp/127.0.0.1/18091) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/18444) 2>/dev/null && break; sleep 0.1; done
+          sleep 0.5
+          rc=0
+          timeout 15 "$T" halfclose -raw 127.0.0.1:18091 -size 300000 || rc=1
+          N=$(grep -c "VLESS downlink splice" "$W/client.log")
+          case ${EXPECT:-} in yes) [ "$N" -gt 0 ] || { echo "FAIL the urgent-data test did not take the zero-copy path"; rc=1; } ;; esac
+          echo "RESULT variant=urgent zero_copy_connections=$N"
+          [ $rc = 0 ] && rm -rf "$W" || echo "logs kept in $W"
+          exit $rc
+          XLITE_URGSH
+          chmod 755 "t/urg.sh"
+          mkdir -p "$(dirname "t/ns-e2e.sh")"
+          cat > "t/ns-e2e.sh" <<'XLITE_NSE2E'
+          #!/bin/bash
+          # ns-e2e.sh XRAY E2ETOOL SRCDIR UCODE_CMD
+          #   client netns -> router netns (XLite xray config + nft tproxy rules + early exits) -> VLESS server netns
+          #   The server has no route back to the client LAN: only traffic that went through the proxy can work.
+          set -u
+          X=$(readlink -f "$1"); T=$(readlink -f "$2"); S=$(readlink -f "$3"); UCODE=$4
+          W=$(mktemp -d /tmp/xlns.XXXX); RUN=$W/run; mkdir -p $RUN $W/conf $W/bin
+          UUID=6a3c0e5e-6f1a-4d55-9d2a-8c1f0b2e7d41
+          fail=0
+          ok() { echo "PASS $*"; }
+          bad() { echo "FAIL $*"; fail=1; }
+          cleanup() {
+          	for n in xl-cli xl-rtr xl-srv; do ip netns pids $n 2>/dev/null | xargs -r kill 2>/dev/null; done
+          	sleep 0.3
+          	for n in xl-cli xl-rtr xl-srv; do ip netns del $n 2>/dev/null; done
+          }
+          trap cleanup EXIT
+          cleanup
+          R() { ip netns exec xl-rtr "$@"; }
+          C() { ip netns exec xl-cli "$@"; }
+          V() { ip netns exec xl-srv "$@"; }
+          for n in xl-cli xl-rtr xl-srv; do ip netns add $n; ip -n $n link set lo up; done
+          ip link add wan netns xl-rtr type veth peer name eth0 netns xl-srv
+          ip link add br-lan netns xl-rtr type veth peer name eth0 netns xl-cli
+          R ip addr add 45.33.0.1/24 dev wan; R ip link set wan up
+          R ip addr add 192.168.77.1/24 dev br-lan; R ip link set br-lan up
+          V ip addr add 45.33.0.2/24 dev eth0; V ip addr add 45.33.0.3/24 dev eth0; V ip link set eth0 up   # .2 = VLESS server (always direct), .3 = the sites
+          C ip addr add 192.168.77.2/24 dev eth0; C ip link set eth0 up; C ip route add default via 192.168.77.1
+          R sh -c 'echo 1 > /proc/sys/net/ipv4/ip_forward'
+          # the server only knows 45.33.0.0/24: it can never answer 192.168.77.0/24 directly (no route, no NAT)
+
+          HDR_REQ='{"version":"1.1","method":"GET","path":["/video"],"headers":{"Host":["www.example.com"]}}'
+          cat > $W/server.json <<J
+          {"log":{"loglevel":"warning"},"inbounds":[{"listen":"45.33.0.2","port":18443,"protocol":"vless","settings":{"clients":[{"id":"$UUID"}],"decryption":"none"},
+           "streamSettings":{"network":"tcp","security":"none","tcpSettings":{"header":{"type":"http","request":$HDR_REQ,"response":{"version":"1.1","status":"200","reason":"OK","headers":{}}}}}}],
+           "outbounds":[{"protocol":"freedom"}]}
+          J
+          V env XRAY_BUF_READV=disable "$X" run -c $W/server.json > $W/server.log 2>&1 &
+          V "$T" serve -http 45.33.0.3:18080 -raw 45.33.0.3:18090 > $W/tool.log 2>&1 &
+          V python3 -c '
+          import socket
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(("45.33.0.3",5300))
+          while True:
+              d,a=s.recvfrom(2048); s.sendto(b"echo:"+d,a)' > /dev/null 2>&1 &
+
+          # XLite config for the router (uci + stubbed ubus; ip and nft are real inside the router namespace)
+          cat > $W/conf/xlite <<EOC
+          config xlite 'main'
+          	option enabled '1'
+          	option transparent 'all'
+          	option impl '${IMPL:-tproxy}'
+          	option dns '${DNS:-proxy}'
+          	option tfo 'default'
+          	option sniffing 'off'
+          	option mux '0'
+          	option splice '1'
+          	option gomaxprocs '1'
+          	option gogc '200'
+          	option early_exit '1'
+          	option tproxy_port '52345'
+          	option socks_port '20170'
+          	option http_port '0'
+          	option ipv6 '0'
+          	option loglevel 'debug'
+          	option server 'srv1'
+
+          config server 'srv1'
+          	option name 'test'
+          	option link 'vless://$UUID@45.33.0.2:18443?type=tcp&headerType=http&host=www.example.com&path=%2Fvideo&security=none#test'
+          EOC
+          printf 'config zone\n\toption name lan\n\tlist network lan\nconfig zone\n\toption name wan\n\tlist network wan\n' > $W/conf/firewall
+          cat > $W/bin/ubus <<'U'
+          #!/bin/sh
+          case "$2" in network.interface.wan) echo '{"l3_device":"wan"}';; network.interface.lan) echo '{"l3_device":"br-lan"}';; *) exit 4;; esac
+          U
+          chmod +x $W/bin/ubus
+          R env PATH=$W/bin:$PATH XLITE_UCI_DIR=$W/conf $UCODE $S/usr/share/xlite/gen.uc build $RUN || { bad "gen.uc build"; exit 1; }
+          R env $(grep -v '=$' $RUN/env | tr '\n' ' ') "$X" run -c $RUN/config.json > $W/client.log 2>&1 &
+          for i in $(seq 50); do R sh -c 'cat /proc/net/tcp' | grep -qi ":CC79 " && break; sleep 0.1; done   # 52345 = 0xCC79
+          # the real xlite rules_up (nft + ip rule/route), with RUN pointing at the test files
+          sed "s|^RUN=.*|RUN=$RUN|" $S/usr/bin/xlite > $W/xlite
+          R sh $W/xlite rules_up && ok "xlite rules_up loaded the ruleset" || bad "xlite rules_up"
+          R nft list chain inet xlite tp_pre | grep -q 'iifname "wan" return' && ok "early exit on wan in prerouting" || bad "early exit wan missing"
+          R nft list chain inet xlite tp_out | grep -q 'oifname "br-lan" return' && ok "early exit on br-lan in output" || bad "early exit br-lan missing"
+          B=http://45.33.0.3:18080
+          C timeout 120 "$T" big -base $B -size $((256 << 20)) > $W/c1 2>&1 && ok "LAN client: 256 MB download through the proxy, every byte checked" || bad "LAN download: $(tail -n2 $W/c1)"
+          C timeout 120 "$T" upload -base $B -size $((64 << 20)) > $W/c2 2>&1 && ok "LAN client: 64 MB upload" || bad "LAN upload: $(tail -n2 $W/c2)"
+          C timeout 120 "$T" small -base $B -n 200 > $W/c3 2>&1 && ok "LAN client: 200 small requests" || bad "small: $(tail -n2 $W/c3)"
+          C timeout 120 "$T" parallel -base $B -n 16 -size $((16 << 20)) > $W/c4 2>&1 && ok "LAN client: 16 parallel downloads" || bad "parallel: $(tail -n2 $W/c4)"
+          C timeout 120 "$T" halfclose -raw 45.33.0.3:18090 -size $((16 << 20)) > $W/c5 2>&1 && ok "LAN client: half-close" || bad "halfclose: $(tail -n2 $W/c5)"
+          C timeout 120 "$T" echo -raw 45.33.0.3:18090 -size $((16 << 20)) > $W/c6 2>&1 && ok "LAN client: 16 MB echo" || bad "echo: $(tail -n2 $W/c6)"
+          U=$(C python3 -c '
+          import socket
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3)
+          r=0
+          for i in range(20):
+              s.sendto(b"x%d"%i,("45.33.0.3",5300))
+              try:
+                  d,_=s.recvfrom(2048); r+= d==b"echo:x%d"%i
+              except Exception: pass
+          print(r)')
+          if [ "${IMPL:-tproxy}" = redirect ]; then [ "${U:-0}" = 0 ] && ok "redirect mode: UDP is not proxied (as expected, TCP only)" || bad "redirect: UDP got answers"
+          else [ "${U:-0}" -ge 18 ] && ok "LAN client: UDP through tproxy ($U/20 echoes)" || bad "UDP: ${U:-0}/20"; fi
+          R timeout 120 "$T" big -base $B -size $((32 << 20)) > $W/r1 2>&1 && ok "router's own traffic (output chain) works" || bad "router traffic: $(tail -n2 $W/r1)"
+          grep -q 'tcp:45.33.0.3:18080' $W/client.log && ok "the router's and LAN connections went through the core" || bad "no proxied connection in the core log"
+          N=$(grep -c 'VLESS downlink splice' $W/client.log)
+          [ "$N" -gt 0 ] && ok "zero-copy download used on $N connections" || bad "zero-copy never used"
+          # proof that it is the proxy: without the rules the LAN client cannot reach the server (no route back)
+          R sh $W/xlite rules_down
+          R nft list table inet xlite > /dev/null 2>&1 && bad "rules_down left the table" || ok "rules_down removed the table"
+          R ip rule | grep -q 'fwmark 0x40/0xc0' && bad "rules_down left the ip rule" || ok "rules_down removed the ip rule"
+          if C timeout 5 "$T" small -base $B -n 2 > $W/c7 2>&1; then bad "LAN reached the server without the proxy (test is not proving anything)"
+          else ok "without the rules the LAN cannot reach the server (so the passes above went through the proxy)"; fi
+          # rules_up twice in a row must not duplicate anything
+          R sh $W/xlite rules_up; R sh $W/xlite rules_up
+          [ "$(R ip rule | grep -c 'fwmark 0x40/0xc0')" = "$([ "${IMPL:-tproxy}" = redirect ] && echo 0 || echo 1)" ] && ok "rules_up is idempotent" || bad "duplicate ip rules"
+          C timeout 120 "$T" small -base $B -n 20 > /dev/null 2>&1 && ok "works again after re-applying" || bad "re-apply"
+          grep -E "panic|fatal" $W/*.log && bad "a core crashed"
+          echo "RESULT fail=$fail logs=$W"
+          [ $fail = 0 ] && rm -rf $W
+          exit $fail
+          XLITE_NSE2E
+          chmod 755 "t/ns-e2e.sh"
+          mkdir -p "$(dirname "t/tool-src/go.mod")"
+          cat > "t/tool-src/go.mod" <<'XLITE_GOMOD'
+          module e2etool
+
+          go 1.21
+          XLITE_GOMOD
+          mkdir -p "$(dirname "t/tool-src/main.go")"
+          cat > "t/tool-src/main.go" <<'XLITE_MAINGO'
+          // e2etool: test server and client for the VLESS splice end-to-end test.
+          // Every payload is a deterministic pseudo-random stream, so the client checks
+          // every byte it receives without storing anything.
+          package main
+
+          import (
+          	"bufio"
+          	"crypto/sha256"
+          	"encoding/binary"
+          	"encoding/hex"
+          	"flag"
+          	"fmt"
+          	"io"
+          	"math/rand"
+          	"net"
+          	"net/http"
+          	"net/http/httptrace"
+          	"os"
+          	"strconv"
+          	"strings"
+          	"sync"
+          	"sync/atomic"
+          	"time"
+          )
+
+          // gen produces the stream for a seed: xorshift64*, 8 bytes per step.
+          type gen struct {
+          	x   uint64
+          	buf [8]byte
+          	pos int
+          }
+
+          func newGen(seed uint64) *gen { return &gen{x: seed*0x9E3779B97F4A7C15 + 0x1234567, pos: 8} }
+
+          func (g *gen) Read(p []byte) (int, error) {
+          	for i := range p {
+          		if g.pos == 8 {
+          			g.x ^= g.x >> 12
+          			g.x ^= g.x << 25
+          			g.x ^= g.x >> 27
+          			binary.LittleEndian.PutUint64(g.buf[:], g.x*2685821657736338717)
+          			g.pos = 0
+          		}
+          		p[i] = g.buf[g.pos]
+          		g.pos++
+          	}
+          	return len(p), nil
+          }
+
+          // checker compares what it is given with the stream of a seed.
+          type checker struct {
+          	g    *gen
+          	want []byte
+          	n    int64
+          }
+
+          func newChecker(seed uint64) *checker { return &checker{g: newGen(seed), want: make([]byte, 64<<10)} }
+
+          func (c *checker) Write(p []byte) (int, error) {
+          	done := 0
+          	for done < len(p) {
+          		k := len(p) - done
+          		if k > len(c.want) {
+          			k = len(c.want)
+          		}
+          		c.g.Read(c.want[:k])
+          		for i := 0; i < k; i++ {
+          			if p[done+i] != c.want[i] {
+          				return done + i, fmt.Errorf("byte %d differs", c.n+int64(done+i))
+          			}
+          		}
+          		done += k
+          	}
+          	c.n += int64(len(p))
+          	return len(p), nil
+          }
+
+          func qint(r *http.Request, k string, d int64) int64 {
+          	if v := r.URL.Query().Get(k); v != "" {
+          		n, err := strconv.ParseInt(v, 10, 64)
+          		if err == nil {
+          			return n
+          		}
+          	}
+          	return d
+          }
+
+          func serve(httpAddr, rawAddr string) {
+          	mux := http.NewServeMux()
+          	mux.HandleFunc("/data", func(w http.ResponseWriter, r *http.Request) {
+          		size, seed := qint(r, "size", 0), qint(r, "seed", 1)
+          		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+          		io.CopyN(w, newGen(uint64(seed)), size)
+          	})
+          	mux.HandleFunc("/slow", func(w http.ResponseWriter, r *http.Request) {
+          		size, seed := qint(r, "size", 0), qint(r, "seed", 1)
+          		chunk, ms := qint(r, "chunk", 100), qint(r, "ms", 1000)
+          		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+          		g := newGen(uint64(seed))
+          		f, _ := w.(http.Flusher)
+          		for size > 0 {
+          			k := chunk
+          			if k > size {
+          				k = size
+          			}
+          			if _, err := io.CopyN(w, g, k); err != nil {
+          				return
+          			}
+          			if f != nil {
+          				f.Flush()
+          			}
+          			size -= k
+          			if size > 0 {
+          				time.Sleep(time.Duration(ms) * time.Millisecond)
+          			}
+          		}
+          	})
+          	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+          		h := sha256.New()
+          		n, err := io.Copy(h, r.Body)
+          		if err != nil {
+          			http.Error(w, err.Error(), 500)
+          			return
+          		}
+          		fmt.Fprintf(w, "%d %s", n, hex.EncodeToString(h.Sum(nil)))
+          	})
+          	go func() {
+          		if err := http.ListenAndServe(httpAddr, mux); err != nil {
+          			fmt.Fprintln(os.Stderr, err)
+          			os.Exit(1)
+          		}
+          	}()
+          	// raw: the client sends "size seed chunk ms\n"; the reply is the stream,
+          	// then the server closes. Whatever else the client sends is ignored.
+          	ln, err := net.Listen("tcp", rawAddr)
+          	if err != nil {
+          		fmt.Fprintln(os.Stderr, err)
+          		os.Exit(1)
+          	}
+          	for {
+          		c, err := ln.Accept()
+          		if err != nil {
+          			continue
+          		}
+          		go func(c net.Conn) {
+          			defer c.Close()
+          			br := bufio.NewReader(c)
+          			line, err := br.ReadString('\n')
+          			if err != nil {
+          				return
+          			}
+          			if strings.HasPrefix(line, "echo ") {
+          				// echo: send back the next n bytes as they come
+          				var n int64
+          				fmt.Sscan(line[5:], &n)
+          				io.CopyN(c, br, n)
+          				return
+          			}
+          			var size, seed, chunk, ms int64
+          			fmt.Sscan(line, &size, &seed, &chunk, &ms)
+          			g := newGen(uint64(seed))
+          			if ms < 0 {
+          				// send size bytes, then reset the connection instead of closing it
+          				io.CopyN(c, g, size)
+          				c.(*net.TCPConn).SetLinger(0)
+          				return
+          			}
+          			if chunk <= 0 {
+          				io.CopyN(c, g, size)
+          				return
+          			}
+          			for size > 0 {
+          				k := chunk
+          				if k > size {
+          					k = size
+          				}
+          				if _, err := io.CopyN(c, g, k); err != nil {
+          					return
+          				}
+          				size -= k
+          				if size > 0 {
+          					time.Sleep(time.Duration(ms) * time.Millisecond)
+          				}
+          			}
+          		}(c)
+          	}
+          }
+
+          // every test ends within 2 minutes or fails: a lost byte must not hang the run
+          const limit = 2 * time.Minute
+
+          var client = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 64, DisableCompression: true}, Timeout: limit}
+
+          func dial(addr string) net.Conn {
+          	c, err := net.Dial("tcp", addr)
+          	if err != nil {
+          		fail("%s: %v", os.Args[1], err)
+          	}
+          	c.SetDeadline(time.Now().Add(limit))
+          	return c
+          }
+
+          func get(base string, size int64, seed uint64) (int64, bool, error) {
+          	reused := false
+          	trace := &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) { reused = i.Reused }}
+          	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/data?size=%d&seed=%d", base, size, seed), nil)
+          	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+          	resp, err := client.Do(req)
+          	if err != nil {
+          		return 0, reused, err
+          	}
+          	defer resp.Body.Close()
+          	n, err := io.Copy(newChecker(seed), resp.Body)
+          	if err == nil && n != size {
+          		err = fmt.Errorf("got %d of %d bytes", n, size)
+          	}
+          	return n, reused, err
+          }
+
+          func fail(f string, a ...interface{}) {
+          	fmt.Printf("FAIL "+f+"\n", a...)
+          	os.Exit(1)
+          }
+
+          func main() {
+          	if len(os.Args) < 2 {
+          		fmt.Println("usage: e2etool serve|big|small|keepalive|parallel|upload|halfclose|abort|trickle ...")
+          		os.Exit(2)
+          	}
+          	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
+          	httpAddr := fs.String("http", "127.0.0.1:18080", "")
+          	rawAddr := fs.String("raw", "127.0.0.1:18090", "")
+          	base := fs.String("base", "http://127.0.0.1:18080", "")
+          	size := fs.Int64("size", 256<<20, "")
+          	count := fs.Int("n", 100, "")
+          	chunk := fs.Int64("chunk", 0, "")
+          	ms := fs.Int64("ms", 0, "")
+          	fs.Parse(os.Args[2:])
+          	switch os.Args[1] {
+          	case "serve":
+          		serve(*httpAddr, *rawAddr)
+          	case "big":
+          		t := time.Now()
+          		n, _, err := get(*base, *size, 7)
+          		if err != nil {
+          			fail("big: %v", err)
+          		}
+          		d := time.Since(t).Seconds()
+          		fmt.Printf("ok big %d MB in %.2f s = %.0f Mbit/s\n", n>>20, d, float64(n)*8/d/1e6)
+          	case "small":
+          		r := rand.New(rand.NewSource(42))
+          		var total int64
+          		for i := 0; i < *count; i++ {
+          			s := int64(r.Intn(3)) * int64(r.Intn(20000))
+          			if i%10 == 0 {
+          				s = int64(i % 7) // 0..6 bytes
+          			}
+          			client.CloseIdleConnections() // a new connection each time
+          			n, _, err := get(*base, s, uint64(1000+i))
+          			if err != nil {
+          				fail("small #%d size %d: %v", i, s, err)
+          			}
+          			total += n
+          		}
+          		fmt.Printf("ok small %d downloads, %d bytes, new connection each\n", *count, total)
+          	case "keepalive":
+          		client.CloseIdleConnections()
+          		r := rand.New(rand.NewSource(7))
+          		reusedN := 0
+          		for i := 0; i < *count; i++ {
+          			s := int64(r.Intn(300000))
+          			if i%5 == 0 {
+          				s = int64(r.Intn(10))
+          			}
+          			_, reused, err := get(*base, s, uint64(5000+i))
+          			if err != nil {
+          				fail("keepalive #%d size %d: %v", i, s, err)
+          			}
+          			if reused {
+          				reusedN++
+          			}
+          		}
+          		if reusedN < *count-1 {
+          			fail("keepalive: only %d of %d requests reused the connection", reusedN, *count)
+          		}
+          		fmt.Printf("ok keepalive %d requests, %d on the same connection\n", *count, reusedN)
+          	case "parallel":
+          		var wg sync.WaitGroup
+          		var bad atomic.Value
+          		var total int64
+          		t := time.Now()
+          		for i := 0; i < *count; i++ {
+          			wg.Add(1)
+          			go func(i int) {
+          				defer wg.Done()
+          				n, _, err := get(*base, *size, uint64(9000+i))
+          				atomic.AddInt64(&total, n)
+          				if err != nil {
+          					bad.Store(fmt.Sprintf("#%d: %v", i, err))
+          				}
+          			}(i)
+          		}
+          		wg.Wait()
+          		if v := bad.Load(); v != nil {
+          			fail("parallel %s", v)
+          		}
+          		d := time.Since(t).Seconds()
+          		fmt.Printf("ok parallel %d x %d MB in %.2f s = %.0f Mbit/s\n", *count, *size>>20, d, float64(total)*8/d/1e6)
+          	case "upload":
+          		h := sha256.New()
+          		g := newGen(77)
+          		pr, pw := io.Pipe()
+          		go func() {
+          			_, err := io.CopyN(io.MultiWriter(pw, h), g, *size)
+          			pw.CloseWithError(err)
+          		}()
+          		resp, err := client.Post(*base+"/upload", "application/octet-stream", pr)
+          		if err != nil {
+          			fail("upload: %v", err)
+          		}
+          		body, _ := io.ReadAll(resp.Body)
+          		resp.Body.Close()
+          		want := fmt.Sprintf("%d %s", *size, hex.EncodeToString(h.Sum(nil)))
+          		if strings.TrimSpace(string(body)) != want {
+          			fail("upload: server saw %q, sent %q", body, want)
+          		}
+          		fmt.Printf("ok upload %d MB, server hash matches\n", *size>>20)
+          	case "halfclose", "trickle":
+          		// raw protocol through the second dokodemo port; halfclose shuts our
+          		// sending side down right after the request line
+          		c := dial(*rawAddr)
+          		fmt.Fprintf(c, "%d %d %d %d\n", *size, 31, *chunk, *ms)
+          		if os.Args[1] == "halfclose" {
+          			c.(*net.TCPConn).CloseWrite()
+          		}
+          		t := time.Now()
+          		n, err := io.Copy(newChecker(31), c)
+          		c.Close()
+          		if err != nil || n != *size {
+          			fail("%s: got %d of %d bytes after %.1f s: %v", os.Args[1], n, *size, time.Since(t).Seconds(), err)
+          		}
+          		fmt.Printf("ok %s %d bytes in %.1f s (chunk %d every %d ms)\n", os.Args[1], n, time.Since(t).Seconds(), *chunk, *ms)
+          	case "slowread":
+          		// read at about -chunk bytes every -ms milliseconds
+          		c := dial(*rawAddr)
+          		fmt.Fprintf(c, "%d %d 0 0\n", *size, 31)
+          		chk := newChecker(31)
+          		t := time.Now()
+          		var n int64
+          		for n < *size {
+          			k, err := io.CopyN(chk, c, *chunk)
+          			n += k
+          			if err != nil {
+          				fail("slowread: got %d of %d bytes: %v", n, *size, err)
+          			}
+          			time.Sleep(time.Duration(*ms) * time.Millisecond)
+          		}
+          		c.Close()
+          		fmt.Printf("ok slowread %d bytes in %.1f s\n", n, time.Since(t).Seconds())
+          	case "echo":
+          		// full duplex: send -size bytes and check the echo while still sending
+          		c := dial(*rawAddr)
+          		fmt.Fprintf(c, "echo %d\n", *size)
+          		errc := make(chan error, 1)
+          		go func() {
+          			_, err := io.CopyN(c, newGen(55), *size)
+          			errc <- err
+          		}()
+          		t := time.Now()
+          		n, err := io.CopyN(newChecker(55), c, *size)
+          		if err != nil {
+          			fail("echo: got %d of %d bytes back: %v", n, *size, err)
+          		}
+          		if err := <-errc; err != nil {
+          			fail("echo: sending: %v", err)
+          		}
+          		c.Close()
+          		fmt.Printf("ok echo %d MB both ways at once in %.1f s\n", n>>20, time.Since(t).Seconds())
+          	case "rst":
+          		// the far end resets the connection after -size bytes: the client
+          		// must get those bytes (or fewer) and an end, not hang
+          		for i := 0; i < *count; i++ {
+          			c := dial(*rawAddr)
+          			c.SetDeadline(time.Now().Add(20 * time.Second))
+          			fmt.Fprintf(c, "%d %d 0 -1\n", *size, 31)
+          			n, err := io.Copy(newChecker(31), c)
+          			c.Close()
+          			if n > *size || (err != nil && strings.Contains(err.Error(), "differs")) {
+          				fail("rst #%d: %d bytes: %v", i, n, err)
+          			}
+          			if err != nil && strings.Contains(err.Error(), "timeout") {
+          				fail("rst #%d: hung after %d bytes", i, n)
+          			}
+          		}
+          		fmt.Printf("ok rst %d connections reset by the far end\n", *count)
+          	case "idle":
+          		// -n keep-alive connections, each idle between two requests; meanwhile
+          		// count the pipes the client xray holds (-pid)
+          		pid := fs.Arg(0)
+          		clients := make([]*http.Client, *count)
+          		for i := range clients {
+          			clients[i] = &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: 1, DisableCompression: true}, Timeout: limit}
+          		}
+          		round := func(r int) int {
+          			reused := 0
+          			for i, cl := range clients {
+          				seed := uint64(70000 + 1000*r + i)
+          				trace := &httptrace.ClientTrace{GotConn: func(ci httptrace.GotConnInfo) {
+          					if ci.Reused {
+          						reused++
+          					}
+          				}}
+          				req, _ := http.NewRequest("GET", fmt.Sprintf("%s/data?size=%d&seed=%d", *base, 3000+i, seed), nil)
+          				resp, err := cl.Do(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+          				if err != nil {
+          					fail("idle round %d #%d: %v", r, i, err)
+          				}
+          				n, err := io.Copy(newChecker(seed), resp.Body)
+          				resp.Body.Close()
+          				if err != nil || n != int64(3000+i) {
+          					fail("idle round %d #%d: %d bytes: %v", r, i, n, err)
+          				}
+          			}
+          			return reused
+          		}
+          		pipes := func() int {
+          			n := 0
+          			if ents, err := os.ReadDir("/proc/" + pid + "/fd"); err == nil {
+          				for _, e := range ents {
+          					if l, _ := os.Readlink("/proc/" + pid + "/fd/" + e.Name()); strings.HasPrefix(l, "pipe:") {
+          						n++
+          					}
+          				}
+          			}
+          			return n / 2
+          		}
+          		before := pipes()
+          		round(0)
+          		time.Sleep(2 * time.Second)
+          		during := pipes()
+          		reused := round(1)
+          		if reused != *count {
+          			fail("idle: only %d of %d connections survived the pause", reused, *count)
+          		}
+          		if during > before+4 {
+          			fail("idle: xray holds %d more pipes while %d connections are idle", during-before, *count)
+          		}
+          		fmt.Printf("ok idle %d connections paused and reused, xray pipes %d before, %d while idle\n", *count, before, during)
+          	case "abort":
+          		for i := 0; i < *count; i++ {
+          			c := dial(*rawAddr)
+          			fmt.Fprintf(c, "%d %d 0 0\n", int64(64<<20), 31)
+          			k := int64(1+i*37%3000) * 1024
+          			n, err := io.CopyN(newChecker(31), c, k)
+          			if err != nil {
+          				fail("abort #%d: got %d of the first %d bytes: %v", i, n, k, err)
+          			}
+          			if i%2 == 0 {
+          				c.(*net.TCPConn).SetLinger(0) // RST
+          			}
+          			c.Close()
+          		}
+          		fmt.Printf("ok abort %d downloads cut short (half by RST)\n", *count)
+          	default:
+          		fmt.Println("unknown command")
+          		os.Exit(2)
+          	}
+          }
+          XLITE_MAINGO
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: "4. Xray source (the same tarball OpenWrt builds, hash checked) + patch 900"
+        run: |
+          set -e
+          curl -sSfL --retry 3 -o xray-src.tar.gz "https://codeload.github.com/XTLS/Xray-core/tar.gz/v$XRAY_VERSION"
+          echo "$XRAY_HASH  xray-src.tar.gz" | sha256sum -c -
+          mkdir -p stock patched
+          tar -xzf xray-src.tar.gz -C stock --strip-components=1
+          tar -xzf xray-src.tar.gz -C patched --strip-components=1
+          (cd patched && patch -p1 --fuzz=0 --no-backup-if-mismatch < ../t/xray-900-vless-downlink-splice.patch)
+          (cd stock && go mod download) && (cd patched && go mod download)
+          export CGO_ENABLED=0
+          (cd stock && go build -trimpath -o ../xray-stock ./main)
+          (cd patched && go build -trimpath -o ../xray-patched ./main)
+          (cd t/tool-src && go build -o ../e2etool .)
+          ./xray-patched version | head -n1
+
+      - name: "5. Zero-copy core: end-to-end tests (VLESS server <- patched client <- test tool, every byte checked)"
+        id: splice
+        if: ${{ inputs.zero_copy }}
+        run: |
+          export TMPDIR=$PWD/tmp; mkdir -p $TMPDIR out/e2e
+          ok=1
+          e2e() { local n=$1; shift; if timeout 900 "$@" > out/e2e/$n.txt 2>&1 || timeout 900 "$@" > out/e2e/$n.txt 2>&1; then echo "- e2e $n: $(grep RESULT out/e2e/$n.txt | tail -n1)" >> out/summary.md; else ok=0; echo "- **FAIL** e2e $n: $(grep -m1 FAIL out/e2e/$n.txt)" >> out/summary.md; fi; }
+          e2e http-full env EXPECT=yes E2ETOOL=$PWD/t/e2etool t/run.sh ./xray-patched http full
+          e2e none-full env EXPECT=yes E2ETOOL=$PWD/t/e2etool t/run.sh ./xray-patched none full
+          e2e tls-quick env EXPECT=no E2ETOOL=$PWD/t/e2etool t/run.sh ./xray-patched tls quick
+          e2e mux-quick env EXPECT=no E2ETOOL=$PWD/t/e2etool t/run.sh ./xray-patched mux quick
+          e2e switched-off env EXPECT=no XRAY_VLESS_SPLICE=off E2ETOOL=$PWD/t/e2etool t/run.sh ./xray-patched http quick
+          e2e urgent-data env EXPECT=yes E2ETOOL=$PWD/t/e2etool t/urg.sh ./xray-patched
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          [ $ok = 1 ] && echo "- **zero-copy core: all tests passed**" >> out/summary.md || echo "- **zero-copy left out: a test failed (the release gets the stock core)**" >> out/summary.md
+
+      - name: "6. XLite end-to-end on the runner: client netns -> router netns (XLite config + nft tproxy) -> VLESS server netns"
+        run: |
+          set -e
+          sudo apt-get update -qq > /dev/null
+          sudo apt-get install -y -qq libjson-c-dev nftables cmake pkg-config > /dev/null
+          P=$PWD/hostroot; export PKG_CONFIG_PATH=$P/lib/pkgconfig
+          get() { mkdir -p "$1" && git -C "$1" init -q && git -C "$1" fetch -q --depth 1 "$2" "$3" && git -C "$1" checkout -q FETCH_HEAD; }
+          get libubox https://github.com/openwrt/libubox.git $LIBUBOX_REV
+          get uci https://github.com/openwrt/uci.git $UCI_REV
+          get ucode https://github.com/jow-/ucode.git $UCODE_REV
+          sed -i 's/^ADD_SUBDIRECTORY(lua)/#&/; s/^ADD_SUBDIRECTORY(examples)/#&/' libubox/CMakeLists.txt
+          (cd libubox && cmake -S . -B b -DBUILD_LUA=OFF -DBUILD_EXAMPLES=OFF -DUNIT_TESTING=OFF -DCMAKE_INSTALL_PREFIX=$P > /dev/null && make -C b -j"$(nproc)" install > /dev/null)
+          (cd uci && cmake -S . -B b -DBUILD_LUA=OFF -DCMAKE_INSTALL_PREFIX=$P -DCMAKE_PREFIX_PATH=$P -DCMAKE_C_FLAGS="-I$P/include" -DCMAKE_EXE_LINKER_FLAGS="-L$P/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L$P/lib" > /dev/null && make -C b -j"$(nproc)" install > /dev/null)
+          (cd ucode && cmake -S . -B b -DCMAKE_INSTALL_PREFIX=$P -DCMAKE_PREFIX_PATH=$P -DCMAKE_C_FLAGS="-I$P/include" \
+             -DCMAKE_EXE_LINKER_FLAGS="-L$P/lib -Wl,-rpath,$P/lib" -DCMAKE_SHARED_LINKER_FLAGS="-L$P/lib -Wl,-rpath,$P/lib" \
+             -DUBUS_SUPPORT=OFF -DULOOP_SUPPORT=OFF -DRTNL_SUPPORT=OFF -DNL80211_SUPPORT=OFF -DRESOLV_SUPPORT=OFF -DDEBUG_SUPPORT=OFF \
+             -DLOG_SUPPORT=OFF -DDIGEST_SUPPORT=OFF -DUCI_SUPPORT=ON -DFS_SUPPORT=ON -DMATH_SUPPORT=ON > /dev/null && make -C b -j"$(nproc)" install > /dev/null)
+          printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/lib exec %s/bin/ucode -L %s/src/usr/share/ucode -L %s/lib/ucode "$@"\n' "$P" "$P" "$PWD" "$P" > uc.sh
+          chmod 755 uc.sh
+          CORE=./xray-patched; [ "${{ steps.splice.outputs.ok }}" = 1 ] || CORE=./xray-stock
+          for mode in tproxy redirect; do
+            if sudo env IMPL=$mode DNS=$([ $mode = redirect ] && echo direct || echo proxy) TMPDIR=/tmp timeout 1200 t/ns-e2e.sh $CORE t/e2etool src ./uc.sh > out/ns-$mode.txt 2>&1; then
+              echo "- XLite $mode end-to-end: $(grep -c ^PASS out/ns-$mode.txt) checks passed" >> out/summary.md
+            else
+              cat out/ns-$mode.txt
+              echo "- **FAIL** XLite $mode end-to-end: $(grep -m1 ^FAIL out/ns-$mode.txt)" >> out/summary.md
+              exit 1
+            fi
+          done
+          [ "${{ steps.splice.outputs.ok }}" = 1 ] && ! grep -q 'zero-copy download used' out/ns-tproxy.txt && { echo "- **FAIL** zero-copy not used through XLite" >> out/summary.md; exit 1; }
+          true
+
+      - name: "7. Cores for every CPU (static, stripped, gzip)"
+        run: |
+          set -e
+          D=stock; [ "${{ steps.splice.outputs.ok }}" = 1 ] && D=patched
+          mkdir -p rel
+          LD="-s -w -buildid= -X github.com/xtls/xray-core/core.build=XLite -X github.com/xtls/xray-core/core.version=$XRAY_VERSION"
+          b() { local n=$1 a=$2; shift 2; (cd $D && env CGO_ENABLED=0 GOOS=linux GOARCH=$a "$@" go build -trimpath -buildvcs=false -ldflags "$LD" -o ../rel/xray-$n ./main); gzip -9nf rel/xray-$n; echo "- core $n: $(du -k rel/xray-$n.gz | cut -f1) KB" >> out/summary.md; }
+          b arm64 arm64
+          b armv7 arm GOARM=7
+          b armv6 arm GOARM=6
+          b armv5 arm GOARM=5
+          b mipsle mipsle GOMIPS=softfloat
+          b mips mips GOMIPS=softfloat
+          b mips64le mips64le GOMIPS64=softfloat
+          b mips64 mips64 GOMIPS64=softfloat
+          b amd64 amd64
+          b 386 386 GO386=softfloat
+          b riscv64 riscv64
+          b loong64 loong64
+          if [ $D = patched ]; then
+            for f in rel/xray-*.gz; do gzip -dc "$f" | grep -aq 'VLESS downlink splice' || { echo "$f has no zero-copy"; exit 1; }; done
+          fi
+
+      - name: "8. Tool package + installer"
+        run: |
+          set -e
+          V="1.0.${{ github.run_number }}"
+          tar --owner=0 --group=0 -czf rel/xlite.tar.gz -C src .
+          sed -e "s|@REPO@|${{ github.repository }}|g" -e "s|@TAG@|$RELEASE_TAG|g" -e "s|@VERSION@|$V|g" install.sh.in > rel/install.sh
+          sh -n rel/install.sh
+          (cd rel && sha256sum xlite.tar.gz install.sh xray-*.gz > sha256sums)
+          echo "$V" > rel/version
+          cat rel/sha256sums
+          echo "- package: XLite $V" >> out/summary.md
+
+      - name: "9. Publish the release"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          R="${{ github.repository }}"
+          V=$(cat rel/version)
+          Z=$([ "${{ steps.splice.outputs.ok }}" = 1 ] && echo "with the zero-copy download" || echo "stock core (zero-copy left out)")
+          printf '%s\n' "XLite $V ($Z)" "" "Install or update on the router (SSH):" "" \
+            "    wget -O- https://github.com/$R/releases/download/$RELEASE_TAG/install.sh | sh" "" \
+            "Then LuCI: Services > XLite." > notes.txt
+          if gh release view "$RELEASE_TAG" -R "$R" > /dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" -R "$R" --title "XLite $V" --notes-file notes.txt --prerelease --latest=false
+          else
+            gh release create "$RELEASE_TAG" -R "$R" --target "$GITHUB_SHA" --title "XLite $V" --notes-file notes.txt --prerelease --latest=false
+          fi
+          gh release upload "$RELEASE_TAG" -R "$R" --clobber rel/install.sh rel/xlite.tar.gz rel/sha256sums rel/version rel/xray-*.gz
+          echo "- **published** release $RELEASE_TAG: XLite $V" >> out/summary.md
+          echo "" >> out/summary.md
+          echo "Install: \`wget -O- https://github.com/$R/releases/download/$RELEASE_TAG/install.sh | sh\`" >> out/summary.md
+
+      - name: Summary
+        if: always()
+        run: cat out/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Logs
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: xlite-logs-${{ github.run_number }}
+          path: out/
