@@ -1,0 +1,1272 @@
+name: XLite Android
+
+# Builds the XLite Android app (arm64) and publishes the APK as release "xlite-android".
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  XRAY_VERSION: "25.1.30"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Write the project
+        run: |
+          set -e
+          mkdir -p xlite-android && cd xlite-android
+          mkdir -p "$(dirname "app/build.gradle")"
+          cat > "app/build.gradle" <<'XL_FILE_0'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
+          android {
+              namespace 'com.xlite.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.xlite.app'
+                  minSdk 26
+                  targetSdk 33
+                  versionCode 1
+                  versionName '0.1.0'
+                  ndk {
+                      abiFilters 'arm64-v8a'
+                  }
+              }
+
+              signingConfigs {
+                  release {
+                      storeFile file('xlite.p12')
+                      storePassword 'xlite123'
+                      keyAlias 'xlite'
+                      keyPassword 'xlite123'
+                      storeType 'pkcs12'
+                  }
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                  }
+              }
+
+              packaging {
+                  jniLibs {
+                      useLegacyPackaging = true
+                      keepDebugSymbols.add('**/*.so')
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+
+              lint {
+                  abortOnError false
+                  checkReleaseBuilds false
+              }
+          }
+          XL_FILE_0
+          mkdir -p "$(dirname "app/src/main/AndroidManifest.xml")"
+          cat > "app/src/main/AndroidManifest.xml" <<'XL_FILE_1'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="XLite"
+                  android:theme="@style/AppTheme"
+                  android:usesCleartextTraffic="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true"
+                      android:launchMode="singleTask">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".XLiteVpnService"
+                      android:exported="false"
+                      android:permission="android.permission.BIND_VPN_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.net.VpnService" />
+                      </intent-filter>
+                  </service>
+              </application>
+          </manifest>
+          XL_FILE_1
+          mkdir -p "$(dirname "app/src/main/assets/index.html")"
+          cat > "app/src/main/assets/index.html" <<'XL_FILE_2'
+          <!DOCTYPE html>
+          <html lang="ar" dir="rtl">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+          <title>XLite</title>
+          <style>
+          :root{--bg:#080D18;--c1:#0F1A2A;--c2:#16233A;--ln:#1B2A44;--tx:#ECF2FA;--mut:#8394AE;--ac:#3BE0A8;--vio:#8B7CFF;--red:#FF6B8B;--amb:#F5C76A}
+          *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+          html,body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+          body{padding:14px 16px calc(24px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto}
+          header{display:flex;align-items:center;justify-content:space-between;margin:6px 0 18px}
+          .logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px;letter-spacing:.3px}
+          .logo i{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#3BE0A8,#2A8F70);display:flex;align-items:center;justify-content:center;color:#04140D;font-style:normal;font-size:19px}
+          .chip{font-size:12px;padding:6px 12px;border-radius:999px;background:var(--c1);border:1px solid var(--ln);color:var(--mut)}
+          .chip.on{color:var(--ac);border-color:#1F5A49}.chip.err{color:var(--red);border-color:#5A2A3A}
+          .hero{display:flex;flex-direction:column;align-items:center;gap:14px;padding:26px 10px 22px;border-radius:30px;background:radial-gradient(circle at 50% 30%,#0F2236,#0A1120 72%);border:1px solid #17304A}
+          .pw{position:relative;width:132px;height:132px;border-radius:50%;border:2px solid var(--ln);background:var(--c1);color:var(--mut);display:flex;align-items:center;justify-content:center;transition:all .4s}
+          .pw svg{width:54px;height:54px}
+          .pw:active{transform:scale(.95)}
+          .pw.on{color:#04140D;background:var(--ac);border-color:var(--ac);box-shadow:0 0 44px rgba(59,224,168,.45)}
+          .pw.connecting{color:var(--amb);border-color:var(--amb);animation:bl 1.1s ease-in-out infinite alternate}
+          .pw.error{color:var(--red);border-color:var(--red)}
+          @keyframes bl{from{opacity:.55}to{opacity:1}}
+          .st{font-size:18px;font-weight:700}
+          .sub{font-size:13px;color:var(--mut);text-align:center;min-height:18px;padding:0 10px}
+          h3{font-size:14px;color:var(--mut);margin:22px 4px 10px;font-weight:600}
+          .srv{display:flex;align-items:center;gap:10px;padding:13px 14px;margin-bottom:8px;border-radius:20px;background:var(--c1);border:1px solid var(--ln)}
+          .srv.sel{border-color:#1F5A49;background:linear-gradient(135deg,#0F2420,#0F1726 70%)}
+          .srv .r{width:18px;height:18px;border-radius:50%;border:2px solid #34476A;flex-shrink:0}
+          .srv.sel .r{border-color:var(--ac);background:radial-gradient(circle,var(--ac) 45%,transparent 50%)}
+          .srv .nm{flex:1;min-width:0}
+          .srv .nm b{display:block;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+          .srv .nm span{font-size:11.5px;color:var(--mut)}
+          .png{font-size:12px;min-width:46px;text-align:center;color:var(--mut)}
+          .png.g{color:var(--ac)}.png.b{color:var(--red)}
+          .ib{width:36px;height:36px;border-radius:12px;border:1px solid var(--ln);background:var(--c2);color:var(--mut);font-size:15px;display:flex;align-items:center;justify-content:center}
+          .empty{padding:22px;text-align:center;color:var(--mut);font-size:13.5px;border:1px dashed var(--ln);border-radius:20px}
+          textarea{width:100%;min-height:84px;border-radius:18px;border:1px solid var(--ln);background:var(--c1);color:var(--tx);padding:12px;font-size:13px;direction:ltr;resize:vertical;font-family:ui-monospace,Menlo,monospace}
+          .btn{width:100%;margin-top:10px;padding:14px;border-radius:18px;border:0;background:var(--ac);color:#04140D;font-weight:800;font-size:15px}
+          .btn.g{background:var(--c2);color:var(--tx);border:1px solid var(--ln);font-weight:600}
+          pre{direction:ltr;text-align:left;white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.5;color:#9FB2CE;background:#060A13;border:1px solid var(--ln);border-radius:16px;padding:12px;max-height:260px;overflow:auto;margin:0}
+          #toast{position:fixed;left:50%;bottom:calc(26px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(30px);opacity:0;background:#ECF2FA;color:#0A1120;padding:11px 18px;border-radius:999px;font-size:13.5px;font-weight:600;transition:all .3s;pointer-events:none;max-width:90%;text-align:center}
+          #toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+          </style>
+          </head>
+          <body>
+          <header>
+            <div class="logo"><i>⚡</i>XLite</div>
+            <div class="chip" id="chip">غير متصل</div>
+          </header>
+
+          <div class="hero">
+            <button class="pw" id="pw" aria-label="اتصال / قطع">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 11-12.8 0"/></svg>
+            </button>
+            <div class="st" id="st">غير متصل</div>
+            <div class="sub" id="sub"></div>
+          </div>
+
+          <h3>السيرفرات</h3>
+          <div id="list"></div>
+
+          <h3>إضافة سيرفر أو اشتراك</h3>
+          <textarea id="inp" placeholder="الصق رابط vless:// أو vmess:// أو trojan:// أو ss://&#10;أو رابط اشتراك (https://…)"></textarea>
+          <button class="btn" id="add">إضافة</button>
+
+          <h3>السجل</h3>
+          <button class="btn g" id="lg">إظهار / إخفاء السجل</button>
+          <pre id="log" hidden style="margin-top:10px"></pre>
+
+          <div id="toast"></div>
+
+          <script>
+          var $ = function (i) { return document.getElementById(i); };
+          var pings = {};
+          var tt = null;
+
+          function render(s) {
+            var map = { off: "غير متصل", connecting: "جاري الاتصال…", on: "متصل", error: "فشل الاتصال" };
+            $("pw").className = "pw " + (s.state === "off" ? "" : s.state);
+            $("st").textContent = map[s.state] || s.state;
+            $("chip").textContent = map[s.state] || s.state;
+            $("chip").className = "chip " + (s.state === "on" ? "on" : s.state === "error" ? "err" : "");
+            $("sub").textContent = s.state === "error" ? (s.message || "") : (s.server || "");
+          }
+
+          function renderList(l) {
+            var box = $("list");
+            box.innerHTML = "";
+            if (!l.length) {
+              var e = document.createElement("div");
+              e.className = "empty";
+              e.textContent = "ماكو سيرفرات. ضيف رابط أو اشتراك من تحت.";
+              box.appendChild(e);
+              return;
+            }
+            l.forEach(function (s) {
+              var d = document.createElement("div");
+              d.className = "srv" + (s.sel ? " sel" : "");
+              var r = document.createElement("div"); r.className = "r";
+              var nm = document.createElement("div"); nm.className = "nm";
+              var b = document.createElement("b"); b.textContent = s.name;
+              var sp = document.createElement("span"); sp.textContent = s.proto;
+              nm.appendChild(b); nm.appendChild(sp);
+              var p = document.createElement("div"); p.className = "png";
+              var ms = pings[s.id];
+              if (ms === undefined) { p.textContent = "فحص"; }
+              else if (ms < 0) { p.textContent = "✕"; p.className += " b"; }
+              else { p.textContent = ms + " ms"; p.className += ms < 300 ? " g" : ""; }
+              p.onclick = function (ev) { ev.stopPropagation(); p.textContent = "…"; Android.ping(s.id); };
+              var x = document.createElement("button"); x.className = "ib"; x.textContent = "✕";
+              x.onclick = function (ev) { ev.stopPropagation(); if (confirm("حذف السيرفر؟")) Android.remove(s.id); };
+              d.appendChild(r); d.appendChild(nm); d.appendChild(p); d.appendChild(x);
+              d.onclick = function () { Android.select(s.id); };
+              box.appendChild(d);
+            });
+          }
+
+          window.xl = {
+            refresh: function () {
+              try {
+                render(JSON.parse(Android.state()));
+                renderList(JSON.parse(Android.list()));
+                if (!$("log").hidden) { var p = $("log"); p.textContent = Android.log(); p.scrollTop = p.scrollHeight; }
+              } catch (e) {}
+            },
+            toast: function (m) {
+              var t = $("toast"); t.textContent = m; t.className = "on";
+              clearTimeout(tt); tt = setTimeout(function () { t.className = ""; }, 2600);
+            },
+            ping: function (id, ms) { pings[id] = ms; xl.refresh(); }
+          };
+
+          $("pw").onclick = function () { Android.toggle(); };
+          $("add").onclick = function () {
+            var v = $("inp").value.trim();
+            if (!v) { xl.toast("الصق رابط أول"); return; }
+            Android.add(v); $("inp").value = ""; xl.toast("جاري الإضافة…");
+          };
+          $("lg").onclick = function () { var p = $("log"); p.hidden = !p.hidden; xl.refresh(); };
+          xl.refresh();
+          </script>
+          </body>
+          </html>
+          XL_FILE_2
+          mkdir -p "$(dirname "app/src/main/java/com/xlite/app/LinkParser.kt")"
+          cat > "app/src/main/java/com/xlite/app/LinkParser.kt" <<'XL_FILE_3'
+          package com.xlite.app
+
+          import android.net.Uri
+          import android.util.Base64
+          import org.json.JSONArray
+          import org.json.JSONObject
+
+          class Node(
+              val protocol: String,
+              val name: String,
+              val host: String,
+              val port: Int,
+              val user: String,
+              val method: String,
+              val q: Map<String, String>
+          )
+
+          object LinkParser {
+
+              private fun b64(s: String): String {
+                  var t = s.trim().replace('-', '+').replace('_', '/').replace("\n", "").replace("\r", "").replace(" ", "")
+                  while (t.length % 4 != 0) t += "="
+                  return String(Base64.decode(t, Base64.DEFAULT), Charsets.UTF_8)
+              }
+
+              fun decodeBase64(s: String): String = b64(s)
+
+              private fun splitHostPort(hp: String): Pair<String, Int> {
+                  if (hp.startsWith("[")) {
+                      val e = hp.indexOf(']')
+                      return Pair(hp.substring(1, e), hp.substring(e + 2).toInt())
+                  }
+                  val i = hp.lastIndexOf(':')
+                  return Pair(hp.substring(0, i), hp.substring(i + 1).toInt())
+              }
+
+              private fun parseQuery(query: String): Map<String, String> {
+                  val m = HashMap<String, String>()
+                  for (part in query.split("&")) {
+                      if (part.isEmpty()) continue
+                      val i = part.indexOf('=')
+                      if (i < 0) m[part] = "" else m[part.substring(0, i)] = Uri.decode(part.substring(i + 1))
+                  }
+                  return m
+              }
+
+              fun parse(raw: String): Node? {
+                  val link = raw.trim()
+                  return try {
+                      when {
+                          link.startsWith("vmess://") -> parseVmess(link)
+                          link.startsWith("vless://") -> parseUrl(link, "vless")
+                          link.startsWith("trojan://") -> parseUrl(link, "trojan")
+                          link.startsWith("ss://") -> parseSs(link)
+                          else -> null
+                      }
+                  } catch (e: Exception) {
+                      null
+                  }
+              }
+
+              private fun parseUrl(link: String, proto: String): Node {
+                  var rest = link.substring(proto.length + 3)
+                  var name = ""
+                  val h = rest.indexOf('#')
+                  if (h >= 0) {
+                      name = Uri.decode(rest.substring(h + 1))
+                      rest = rest.substring(0, h)
+                  }
+                  var query = ""
+                  val qi = rest.indexOf('?')
+                  if (qi >= 0) {
+                      query = rest.substring(qi + 1)
+                      rest = rest.substring(0, qi)
+                  }
+                  val at = rest.lastIndexOf('@')
+                  val user = Uri.decode(rest.substring(0, at))
+                  val hp = splitHostPort(rest.substring(at + 1).trimEnd('/'))
+                  return Node(proto, if (name.isEmpty()) hp.first else name, hp.first, hp.second, user, "", parseQuery(query))
+              }
+
+              private fun parseVmess(link: String): Node {
+                  val j = JSONObject(b64(link.substring(8)))
+                  val q = HashMap<String, String>()
+                  q["type"] = j.optString("net", "tcp")
+                  q["headerType"] = j.optString("type", "none")
+                  q["host"] = j.optString("host", "")
+                  q["path"] = j.optString("path", "")
+                  q["serviceName"] = j.optString("path", "")
+                  q["security"] = if (j.optString("tls", "") == "tls") "tls" else "none"
+                  q["sni"] = j.optString("sni", "")
+                  q["alpn"] = j.optString("alpn", "")
+                  q["fp"] = j.optString("fp", "")
+                  val host = j.getString("add")
+                  val port = j.get("port").toString().toInt()
+                  val name = j.optString("ps", host)
+                  val scy = j.optString("scy", "auto")
+                  return Node("vmess", if (name.isEmpty()) host else name, host, port, j.getString("id"), scy, q)
+              }
+
+              private fun parseSs(link: String): Node {
+                  var rest = link.substring(5)
+                  var name = ""
+                  val h = rest.indexOf('#')
+                  if (h >= 0) {
+                      name = Uri.decode(rest.substring(h + 1))
+                      rest = rest.substring(0, h)
+                  }
+                  val qi = rest.indexOf('?')
+                  if (qi >= 0) rest = rest.substring(0, qi)
+                  rest = rest.trimEnd('/')
+                  val method: String
+                  val pass: String
+                  val hp: Pair<String, Int>
+                  val at = rest.lastIndexOf('@')
+                  if (at >= 0) {
+                      var ui = rest.substring(0, at)
+                      ui = if (ui.contains(":")) Uri.decode(ui) else b64(ui)
+                      method = ui.substringBefore(":")
+                      pass = ui.substringAfter(":")
+                      hp = splitHostPort(rest.substring(at + 1))
+                  } else {
+                      val all = b64(rest)
+                      val a2 = all.lastIndexOf('@')
+                      val ui = all.substring(0, a2)
+                      method = ui.substringBefore(":")
+                      pass = ui.substringAfter(":")
+                      hp = splitHostPort(all.substring(a2 + 1))
+                  }
+                  return Node("ss", if (name.isEmpty()) hp.first else name, hp.first, hp.second, pass, method, HashMap<String, String>())
+              }
+
+              // xray outbound for a node; addr is the (already resolved) address of the server
+              fun outbound(n: Node, addr: String): JSONObject {
+                  val q = n.q
+                  val o = JSONObject()
+                  o.put("tag", "proxy")
+                  val settings = JSONObject()
+                  when (n.protocol) {
+                      "vless" -> {
+                          o.put("protocol", "vless")
+                          val u = JSONObject().put("id", n.user).put("encryption", q["encryption"] ?: "none")
+                          val flow = q["flow"] ?: ""
+                          if (flow.isNotEmpty()) u.put("flow", flow)
+                          val vn = JSONObject().put("address", addr).put("port", n.port).put("users", JSONArray().put(u))
+                          settings.put("vnext", JSONArray().put(vn))
+                      }
+                      "vmess" -> {
+                          o.put("protocol", "vmess")
+                          val u = JSONObject().put("id", n.user).put("alterId", 0)
+                              .put("security", if (n.method.isEmpty()) "auto" else n.method)
+                          val vn = JSONObject().put("address", addr).put("port", n.port).put("users", JSONArray().put(u))
+                          settings.put("vnext", JSONArray().put(vn))
+                      }
+                      "trojan" -> {
+                          o.put("protocol", "trojan")
+                          val s = JSONObject().put("address", addr).put("port", n.port).put("password", n.user)
+                          settings.put("servers", JSONArray().put(s))
+                      }
+                      else -> {
+                          o.put("protocol", "shadowsocks")
+                          val s = JSONObject().put("address", addr).put("port", n.port)
+                              .put("method", n.method).put("password", n.user)
+                          settings.put("servers", JSONArray().put(s))
+                      }
+                  }
+                  o.put("settings", settings)
+
+                  val net = (q["type"] ?: "tcp").lowercase()
+                  val sec = (q["security"] ?: (if (n.protocol == "trojan") "tls" else "none")).lowercase()
+                  val hostHdr = if ((q["host"] ?: "").isNotEmpty()) q["host"]!! else n.host
+                  val rawPath = q["path"] ?: ""
+                  val path = if (rawPath.isEmpty()) "/" else rawPath
+                  val network = when (net) {
+                      "ws" -> "ws"
+                      "grpc" -> "grpc"
+                      "httpupgrade" -> "httpupgrade"
+                      "xhttp", "splithttp" -> "xhttp"
+                      else -> "tcp"
+                  }
+                  val ss = JSONObject()
+                  ss.put("network", network)
+                  if (network == "ws") {
+                      ss.put("wsSettings", JSONObject().put("path", path).put("headers", JSONObject().put("Host", hostHdr)))
+                  } else if (network == "grpc") {
+                      ss.put("grpcSettings", JSONObject().put("serviceName", q["serviceName"] ?: "")
+                          .put("multiMode", (q["mode"] ?: "") == "multi"))
+                  } else if (network == "httpupgrade") {
+                      ss.put("httpupgradeSettings", JSONObject().put("path", path).put("host", hostHdr))
+                  } else if (network == "xhttp") {
+                      ss.put("xhttpSettings", JSONObject().put("path", path).put("host", hostHdr).put("mode", q["mode"] ?: "auto"))
+                  } else if ((q["headerType"] ?: "none") == "http") {
+                      val req = JSONObject().put("path", JSONArray().put(path))
+                          .put("headers", JSONObject().put("Host", JSONArray().put(hostHdr)))
+                      ss.put("tcpSettings", JSONObject().put("header", JSONObject().put("type", "http").put("request", req)))
+                  }
+
+                  val sni = (q["sni"] ?: "").ifEmpty { hostHdr }
+                  val fp = q["fp"] ?: ""
+                  if (sec == "tls") {
+                      ss.put("security", "tls")
+                      val t = JSONObject().put("serverName", sni).put("allowInsecure", (q["allowInsecure"] ?: "0") == "1")
+                      if (fp.isNotEmpty()) t.put("fingerprint", fp)
+                      val alpn = q["alpn"] ?: ""
+                      if (alpn.isNotEmpty()) {
+                          val a = JSONArray()
+                          for (x in alpn.split(",")) if (x.isNotEmpty()) a.put(x)
+                          t.put("alpn", a)
+                      }
+                      ss.put("tlsSettings", t)
+                  } else if (sec == "reality") {
+                      ss.put("security", "reality")
+                      val r = JSONObject().put("serverName", sni)
+                          .put("fingerprint", if (fp.isEmpty()) "chrome" else fp)
+                          .put("publicKey", q["pbk"] ?: "")
+                          .put("shortId", q["sid"] ?: "")
+                          .put("spiderX", q["spx"] ?: "")
+                      ss.put("realitySettings", r)
+                  } else {
+                      ss.put("security", "none")
+                  }
+                  o.put("streamSettings", ss)
+                  return o
+              }
+
+              fun config(proxy: JSONObject, socksPort: Int): String {
+                  val root = JSONObject()
+                  root.put("log", JSONObject().put("loglevel", "warning"))
+                  val inbound = JSONObject()
+                      .put("tag", "socks")
+                      .put("listen", "127.0.0.1")
+                      .put("port", socksPort)
+                      .put("protocol", "socks")
+                      .put("settings", JSONObject().put("udp", true).put("auth", "noauth"))
+                      .put("sniffing", JSONObject().put("enabled", true)
+                          .put("destOverride", JSONArray().put("http").put("tls").put("quic")))
+                  root.put("inbounds", JSONArray().put(inbound))
+                  val outs = JSONArray()
+                  outs.put(proxy)
+                  outs.put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
+                  outs.put(JSONObject().put("tag", "block").put("protocol", "blackhole"))
+                  root.put("outbounds", outs)
+                  val priv = JSONArray()
+                  for (c in listOf("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16")) priv.put(c)
+                  val rules = JSONArray()
+                  rules.put(JSONObject().put("type", "field").put("ip", priv).put("outboundTag", "direct"))
+                  root.put("routing", JSONObject().put("domainStrategy", "AsIs").put("rules", rules))
+                  return root.toString(2)
+              }
+          }
+          XL_FILE_3
+          mkdir -p "$(dirname "app/src/main/java/com/xlite/app/MainActivity.kt")"
+          cat > "app/src/main/java/com/xlite/app/MainActivity.kt" <<'XL_FILE_4'
+          package com.xlite.app
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.VpnService
+          import android.os.Build
+          import android.os.Bundle
+          import android.webkit.JavascriptInterface
+          import android.webkit.WebView
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.InetSocketAddress
+          import java.net.Proxy
+          import java.net.Socket
+          import java.net.URL
+
+          class MainActivity : Activity() {
+
+              private lateinit var web: WebView
+              private lateinit var store: Store
+              private val reqVpn = 10
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  store = Store(this)
+                  web = WebView(this)
+                  setContentView(web)
+                  val s = web.settings
+                  s.javaScriptEnabled = true
+                  s.domStorageEnabled = true
+                  web.setBackgroundColor(0xFF080D18.toInt())
+                  web.addJavascriptInterface(Bridge(), "Android")
+                  web.loadUrl("file:///android_asset/index.html")
+                  XLiteVpnService.listener = {
+                      runOnUiThread { web.evaluateJavascript("window.xl&&xl.refresh()", null) }
+                  }
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
+                  }
+              }
+
+              override fun onDestroy() {
+                  XLiteVpnService.listener = null
+                  super.onDestroy()
+              }
+
+              private fun startVpn() {
+                  val i = Intent(this, XLiteVpnService::class.java).setAction(XLiteVpnService.ACTION_START)
+                  startForegroundService(i)
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == reqVpn) {
+                      if (resultCode == RESULT_OK) startVpn() else toast("ما انمنحت صلاحية VPN")
+                  }
+              }
+
+              private fun toast(msg: String) {
+                  runOnUiThread {
+                      web.evaluateJavascript("window.xl&&xl.toast(" + JSONObject.quote(msg) + ")", null)
+                  }
+              }
+
+              private fun fetchSub(u: String): List<String> {
+                  val url = URL(u)
+                  val conn = if (XLiteVpnService.state == "on") {
+                      url.openConnection(Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", XLiteVpnService.SOCKS_PORT)))
+                  } else {
+                      url.openConnection()
+                  }
+                  val c = conn as HttpURLConnection
+                  c.connectTimeout = 15000
+                  c.readTimeout = 20000
+                  c.setRequestProperty("User-Agent", "XLite/0.1")
+                  val body = c.inputStream.bufferedReader().readText()
+                  c.disconnect()
+                  var text = body.trim()
+                  if (!text.contains("://")) {
+                      text = try {
+                          LinkParser.decodeBase64(text)
+                      } catch (e: Exception) {
+                          text
+                      }
+                  }
+                  return text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+              }
+
+              inner class Bridge {
+
+                  @JavascriptInterface
+                  fun state(): String {
+                      val o = JSONObject()
+                      o.put("state", XLiteVpnService.state)
+                      o.put("message", XLiteVpnService.message)
+                      var name = XLiteVpnService.serverName
+                      if (name.isEmpty()) {
+                          val sel = store.selected
+                          name = store.servers().firstOrNull { it.id == sel }?.name ?: ""
+                      }
+                      o.put("server", name)
+                      return o.toString()
+                  }
+
+                  @JavascriptInterface
+                  fun list(): String {
+                      val arr = JSONArray()
+                      val sel = store.selected
+                      for (s in store.servers()) {
+                          val n = LinkParser.parse(s.link)
+                          arr.put(
+                              JSONObject().put("id", s.id).put("name", s.name)
+                                  .put("proto", n?.protocol ?: "?").put("sel", s.id == sel)
+                          )
+                      }
+                      return arr.toString()
+                  }
+
+                  @JavascriptInterface
+                  fun add(text: String) {
+                      Thread {
+                          try {
+                              val t = text.trim()
+                              val links = if (t.startsWith("http://") || t.startsWith("https://")) fetchSub(t) else t.lines()
+                              val n = store.add(links)
+                              toast(if (n > 0) "انضاف $n سيرفر" else "ما لقيت سيرفر جديد مدعوم")
+                          } catch (e: Exception) {
+                              toast("فشل: " + (e.message ?: e.toString()))
+                          }
+                          XLiteVpnService.notifyUi()
+                      }.start()
+                  }
+
+                  @JavascriptInterface
+                  fun remove(id: String) {
+                      store.remove(id)
+                      XLiteVpnService.notifyUi()
+                  }
+
+                  @JavascriptInterface
+                  fun select(id: String) {
+                      store.selected = id
+                      XLiteVpnService.notifyUi()
+                  }
+
+                  @JavascriptInterface
+                  fun toggle() {
+                      runOnUiThread {
+                          val st = XLiteVpnService.state
+                          if (st == "on" || st == "connecting") {
+                              startService(Intent(this@MainActivity, XLiteVpnService::class.java).setAction(XLiteVpnService.ACTION_STOP))
+                          } else if (store.selected.isEmpty()) {
+                              toast("ضيف سيرفر أول")
+                          } else {
+                              val p = VpnService.prepare(this@MainActivity)
+                              if (p != null) startActivityForResult(p, reqVpn) else startVpn()
+                          }
+                      }
+                  }
+
+                  @JavascriptInterface
+                  fun ping(id: String) {
+                      Thread {
+                          var ms = -1
+                          try {
+                              val srv = store.servers().firstOrNull { it.id == id }
+                              val n = if (srv != null) LinkParser.parse(srv.link) else null
+                              if (n != null) {
+                                  val sock = Socket()
+                                  val t0 = System.nanoTime()
+                                  try {
+                                      sock.connect(InetSocketAddress(n.host, n.port), 4000)
+                                      ms = ((System.nanoTime() - t0) / 1000000).toInt()
+                                  } finally {
+                                      try {
+                                          sock.close()
+                                      } catch (e: Exception) {
+                                      }
+                                  }
+                              }
+                          } catch (e: Exception) {
+                              ms = -1
+                          }
+                          val r = ms
+                          runOnUiThread { web.evaluateJavascript("window.xl&&xl.ping('" + id + "'," + r + ")", null) }
+                      }.start()
+                  }
+
+                  @JavascriptInterface
+                  fun log(): String = XLiteVpnService.logText()
+
+                  @JavascriptInterface
+                  fun clearLog() {
+                      XLiteVpnService.clearLog()
+                  }
+              }
+          }
+          XL_FILE_4
+          mkdir -p "$(dirname "app/src/main/java/com/xlite/app/Store.kt")"
+          cat > "app/src/main/java/com/xlite/app/Store.kt" <<'XL_FILE_5'
+          package com.xlite.app
+
+          import android.content.Context
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.util.UUID
+
+          class Server(val id: String, val name: String, val link: String)
+
+          class Store(ctx: Context) {
+              private val sp = ctx.getSharedPreferences("xlite", Context.MODE_PRIVATE)
+
+              @Synchronized
+              fun servers(): MutableList<Server> {
+                  val out = ArrayList<Server>()
+                  try {
+                      val arr = JSONArray(sp.getString("servers", "[]"))
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          out.add(Server(o.getString("id"), o.getString("name"), o.getString("link")))
+                      }
+                  } catch (e: Exception) {
+                  }
+                  return out
+              }
+
+              @Synchronized
+              fun save(list: List<Server>) {
+                  val arr = JSONArray()
+                  for (s in list) {
+                      arr.put(JSONObject().put("id", s.id).put("name", s.name).put("link", s.link))
+                  }
+                  sp.edit().putString("servers", arr.toString()).apply()
+              }
+
+              var selected: String
+                  get() = sp.getString("selected", "") ?: ""
+                  set(v) {
+                      sp.edit().putString("selected", v).apply()
+                  }
+
+              // returns how many new servers were added
+              @Synchronized
+              fun add(links: List<String>): Int {
+                  val list = servers()
+                  var n = 0
+                  for (raw in links) {
+                      val link = raw.trim()
+                      if (link.isEmpty()) continue
+                      val node = LinkParser.parse(link) ?: continue
+                      if (list.any { it.link == link }) continue
+                      list.add(Server(UUID.randomUUID().toString().substring(0, 8), node.name, link))
+                      n++
+                  }
+                  save(list)
+                  if (selected.isEmpty() && list.isNotEmpty()) selected = list[0].id
+                  return n
+              }
+
+              @Synchronized
+              fun remove(id: String) {
+                  val list = servers()
+                  list.removeAll { it.id == id }
+                  save(list)
+                  if (selected == id) selected = if (list.isNotEmpty()) list[0].id else ""
+              }
+          }
+          XL_FILE_5
+          mkdir -p "$(dirname "app/src/main/java/com/xlite/app/TProxyService.kt")"
+          cat > "app/src/main/java/com/xlite/app/TProxyService.kt" <<'XL_FILE_6'
+          package com.xlite.app
+
+          // JNI entry points of hev-socks5-tunnel (packet forwarding between the VPN tun and xray's socks port)
+          class TProxyService {
+              companion object {
+                  init {
+                      System.loadLibrary("hev-socks5-tunnel")
+                  }
+
+                  @JvmStatic
+                  external fun TProxyStartService(configPath: String, fd: Int)
+
+                  @JvmStatic
+                  external fun TProxyStopService()
+
+                  @JvmStatic
+                  external fun TProxyGetStats(): LongArray
+              }
+          }
+          XL_FILE_6
+          mkdir -p "$(dirname "app/src/main/java/com/xlite/app/XLiteVpnService.kt")"
+          cat > "app/src/main/java/com/xlite/app/XLiteVpnService.kt" <<'XL_FILE_7'
+          package com.xlite.app
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.content.Intent
+          import android.net.VpnService
+          import android.os.ParcelFileDescriptor
+          import java.io.File
+          import java.net.Inet4Address
+          import java.net.InetAddress
+          import java.net.InetSocketAddress
+          import java.net.Socket
+
+          class XLiteVpnService : VpnService() {
+
+              companion object {
+                  const val ACTION_START = "com.xlite.app.START"
+                  const val ACTION_STOP = "com.xlite.app.STOP"
+                  const val SOCKS_PORT = 10808
+
+                  @Volatile
+                  var state = "off" // off, connecting, on, error
+
+                  @Volatile
+                  var message = ""
+
+                  @Volatile
+                  var serverName = ""
+
+                  @Volatile
+                  var listener: (() -> Unit)? = null
+
+                  private val logBuf = StringBuilder()
+
+                  fun log(s: String) {
+                      synchronized(logBuf) {
+                          logBuf.append(s).append('\n')
+                          if (logBuf.length > 20000) logBuf.delete(0, logBuf.length - 15000)
+                      }
+                      notifyUi()
+                  }
+
+                  fun logText(): String {
+                      synchronized(logBuf) {
+                          return logBuf.toString()
+                      }
+                  }
+
+                  fun clearLog() {
+                      synchronized(logBuf) {
+                          logBuf.setLength(0)
+                      }
+                      notifyUi()
+                  }
+
+                  fun notifyUi() {
+                      try {
+                          listener?.invoke()
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+
+              private var tun: ParcelFileDescriptor? = null
+              private var proc: Process? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_STOP) {
+                      stopAll()
+                      state = "off"
+                      message = ""
+                      notifyUi()
+                      stopForeground(true)
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  if (state == "on" || state == "connecting") return START_NOT_STICKY
+                  state = "connecting"
+                  message = ""
+                  notifyUi()
+                  startForeground(1, notification("جاري الاتصال…"))
+                  Thread {
+                      try {
+                          doStart()
+                      } catch (t: Throwable) {
+                          log("خطأ: " + (t.message ?: t.toString()))
+                          fail(t.message ?: "خطأ غير معروف")
+                      }
+                  }.start()
+                  return START_NOT_STICKY
+              }
+
+              private fun resolveHost(host: String): String {
+                  if (host.contains(":") || host.matches(Regex("^[0-9.]+$"))) return host
+                  val all = InetAddress.getAllByName(host)
+                  for (a in all) if (a is Inet4Address) return a.hostAddress ?: host
+                  return all[0].hostAddress ?: host
+              }
+
+              private fun waitPort(port: Int, ms: Int): Boolean {
+                  val end = System.currentTimeMillis() + ms
+                  while (System.currentTimeMillis() < end) {
+                      try {
+                          val s = Socket()
+                          s.connect(InetSocketAddress("127.0.0.1", port), 300)
+                          s.close()
+                          return true
+                      } catch (e: Exception) {
+                          Thread.sleep(150)
+                      }
+                  }
+                  return false
+              }
+
+              private fun doStart() {
+                  val store = Store(this)
+                  val sel = store.selected
+                  val server = store.servers().firstOrNull { it.id == sel } ?: throw Exception("ما محدد سيرفر")
+                  val node = LinkParser.parse(server.link) ?: throw Exception("رابط السيرفر غير مدعوم")
+                  serverName = server.name
+                  log("السيرفر: " + server.name + " (" + node.protocol + ")")
+
+                  val addr = try {
+                      resolveHost(node.host)
+                  } catch (e: Exception) {
+                      throw Exception("ما كدرت أحل اسم السيرفر " + node.host)
+                  }
+                  val cfg = LinkParser.config(LinkParser.outbound(node, addr), SOCKS_PORT)
+                  val cfgFile = File(filesDir, "config.json")
+                  cfgFile.writeText(cfg)
+
+                  val bin = File(applicationInfo.nativeLibraryDir, "libxray.so")
+                  if (!bin.exists()) throw Exception("نواة xray مو موجودة بالتطبيق")
+                  val pb = ProcessBuilder(bin.absolutePath, "run", "-c", cfgFile.absolutePath)
+                  pb.directory(filesDir)
+                  pb.redirectErrorStream(true)
+                  pb.environment()["XRAY_LOCATION_ASSET"] = filesDir.absolutePath
+                  val p = pb.start()
+                  proc = p
+                  Thread {
+                      try {
+                          p.inputStream.bufferedReader().forEachLine { log(it) }
+                      } catch (e: Exception) {
+                      }
+                  }.start()
+                  if (!waitPort(SOCKS_PORT, 7000)) throw Exception("xray ما اشتغل (شوف السجل)")
+                  log("xray اشتغل")
+
+                  val b = Builder()
+                      .setSession("XLite")
+                      .setMtu(1500)
+                      .addAddress("10.10.14.2", 30)
+                      .addRoute("0.0.0.0", 0)
+                      .addDnsServer("1.1.1.1")
+                      .addDnsServer("8.8.8.8")
+                  try {
+                      b.addDisallowedApplication(packageName)
+                  } catch (e: Exception) {
+                  }
+                  val t = b.establish() ?: throw Exception("ما انمنحت صلاحية VPN")
+                  tun = t
+
+                  val hev = File(filesDir, "hev.yml")
+                  hev.writeText(
+                      "tunnel:\n  mtu: 1500\nsocks5:\n  port: " + SOCKS_PORT +
+                          "\n  address: 127.0.0.1\n  udp: 'udp'\nmisc:\n  log-level: warn\n"
+                  )
+                  try {
+                      TProxyService.TProxyStartService(hev.absolutePath, t.fd)
+                  } catch (e: Throwable) {
+                      throw Exception("فشل تشغيل hev: " + (e.message ?: e.toString()))
+                  }
+                  log("الاتصال اشتغل")
+                  state = "on"
+                  notifyUi()
+                  updateNotification("متصل — " + serverName)
+
+                  Thread {
+                      try {
+                          p.waitFor()
+                      } catch (e: Exception) {
+                      }
+                      if (state == "on") {
+                          log("xray وقف")
+                          fail("xray وقف فجأة")
+                      }
+                  }.start()
+              }
+
+              private fun stopAll() {
+                  try {
+                      TProxyService.TProxyStopService()
+                  } catch (t: Throwable) {
+                  }
+                  try {
+                      tun?.close()
+                  } catch (e: Exception) {
+                  }
+                  tun = null
+                  try {
+                      proc?.destroy()
+                  } catch (e: Exception) {
+                  }
+                  proc = null
+              }
+
+              private fun fail(msg: String) {
+                  stopAll()
+                  state = "error"
+                  message = msg
+                  notifyUi()
+                  try {
+                      stopForeground(true)
+                  } catch (e: Exception) {
+                  }
+                  stopSelf()
+              }
+
+              override fun onRevoke() {
+                  stopAll()
+                  state = "off"
+                  notifyUi()
+                  stopForeground(true)
+                  stopSelf()
+                  super.onRevoke()
+              }
+
+              override fun onDestroy() {
+                  stopAll()
+                  if (state == "on" || state == "connecting") state = "off"
+                  notifyUi()
+                  super.onDestroy()
+              }
+
+              private fun notification(text: String): Notification {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(NotificationChannel("xlite", "XLite", NotificationManager.IMPORTANCE_LOW))
+                  val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+                  return Notification.Builder(this, "xlite")
+                      .setContentTitle("XLite")
+                      .setContentText(text)
+                      .setSmallIcon(R.drawable.ic_stat)
+                      .setContentIntent(pi)
+                      .setOngoing(true)
+                      .build()
+              }
+
+              private fun updateNotification(text: String) {
+                  try {
+                      getSystemService(NotificationManager::class.java).notify(1, notification(text))
+                  } catch (e: Exception) {
+                  }
+              }
+          }
+          XL_FILE_7
+          mkdir -p "$(dirname "app/src/main/res/drawable/ic_fg.xml")"
+          cat > "app/src/main/res/drawable/ic_fg.xml" <<'XL_FILE_8'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#FF3BE0A8"
+                  android:pathData="M58,30 L40,58 L51,58 L46,80 L68,50 L56,50 Z" />
+          </vector>
+          XL_FILE_8
+          mkdir -p "$(dirname "app/src/main/res/drawable/ic_stat.xml")"
+          cat > "app/src/main/res/drawable/ic_stat.xml" <<'XL_FILE_9'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp"
+              android:height="24dp"
+              android:viewportWidth="24"
+              android:viewportHeight="24">
+              <path
+                  android:fillColor="#FFFFFFFF"
+                  android:pathData="M13,2 L5,14 L11,14 L10,22 L19,10 L13,10 Z" />
+          </vector>
+          XL_FILE_9
+          mkdir -p "$(dirname "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml")"
+          cat > "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml" <<'XL_FILE_10'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_bg" />
+              <foreground android:drawable="@drawable/ic_fg" />
+          </adaptive-icon>
+          XL_FILE_10
+          mkdir -p "$(dirname "app/src/main/res/values/colors.xml")"
+          cat > "app/src/main/res/values/colors.xml" <<'XL_FILE_11'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_bg">#FF080D18</color>
+          </resources>
+          XL_FILE_11
+          mkdir -p "$(dirname "app/src/main/res/values/styles.xml")"
+          cat > "app/src/main/res/values/styles.xml" <<'XL_FILE_12'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">#FF080D18</item>
+                  <item name="android:statusBarColor">#FF080D18</item>
+                  <item name="android:navigationBarColor">#FF080D18</item>
+              </style>
+          </resources>
+          XL_FILE_12
+          mkdir -p "$(dirname "app/xlite.p12")"
+          base64 -d > "app/xlite.p12" <<'XL_B64_13'
+          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
+          RIQCGR0d+8Crw/HmVQICJxA=
+          XL_B64_13
+          mkdir -p "$(dirname "build.gradle")"
+          cat > "build.gradle" <<'XL_FILE_14'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          XL_FILE_14
+          mkdir -p "$(dirname "gradle.properties")"
+          cat > "gradle.properties" <<'XL_FILE_15'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          XL_FILE_15
+          mkdir -p "$(dirname "settings.gradle")"
+          cat > "settings.gradle" <<'XL_FILE_16'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "XLite"
+          include ':app'
+          XL_FILE_16
+
+      - name: Get the xray core (android arm64)
+        run: |
+          set -e
+          cd xlite-android
+          B="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}"
+          curl -fsSL "$B/Xray-android-arm64-v8a.zip" -o /tmp/xray.zip
+          curl -fsSL "$B/Xray-android-arm64-v8a.zip.dgst" -o /tmp/xray.dgst
+          WANT=$(grep -i 'sha2-256' /tmp/xray.dgst | awk '{print $NF}' | head -1)
+          GOT=$(sha256sum /tmp/xray.zip | awk '{print $1}')
+          echo "want=$WANT got=$GOT"
+          [ -n "$WANT" ] && [ "$WANT" = "$GOT" ] || { echo "xray hash mismatch"; exit 1; }
+          mkdir -p /tmp/xray && unzip -o /tmp/xray.zip xray -d /tmp/xray
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp /tmp/xray/xray app/src/main/jniLibs/arm64-v8a/libxray.so
+          chmod 755 app/src/main/jniLibs/arm64-v8a/libxray.so
+          file app/src/main/jniLibs/arm64-v8a/libxray.so || true
+
+      - name: Build hev-socks5-tunnel (JNI, arm64)
+        run: |
+          set -e
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/* | tail -1)}}"
+          echo "NDK=$NDK"
+          mkdir -p hev/jni && cd hev
+          git clone --recursive --depth 1 --shallow-submodules https://github.com/heiher/hev-socks5-tunnel jni/hev-socks5-tunnel
+          grep -rn "PKGNAME\|CLSNAME" jni/hev-socks5-tunnel/Android.mk jni/hev-socks5-tunnel/src/hev-jni.c || true
+          echo 'include $(call all-subdir-makefiles)' > jni/Android.mk
+          "$NDK/ndk-build" NDK_PROJECT_PATH="$PWD" APP_BUILD_SCRIPT="$PWD/jni/Android.mk" \
+            APP_ABI=arm64-v8a APP_PLATFORM=android-26 NDK_LIBS_OUT="$PWD/libs" NDK_OUT="$PWD/obj" \
+            "APP_CFLAGS=-O3 -DPKGNAME=com/xlite/app" "APP_LDFLAGS=-Wl,--build-id=none -Wl,--hash-style=gnu"
+          ls -la libs/arm64-v8a
+          cp libs/arm64-v8a/libhev-socks5-tunnel.so ../xlite-android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Build the APK
+        run: |
+          set -e
+          cd xlite-android
+          gradle --no-daemon assembleRelease
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk ../out/XLite-android-arm64.apk
+          ls -la ../out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XLite-android-arm64
+          path: out/XLite-android-arm64.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          R="${{ github.repository }}"
+          gh release view xlite-android -R "$R" > /dev/null 2>&1 || gh release create xlite-android -R "$R" --title "XLite Android" --notes "XLite for Android (arm64). Install the APK and allow the VPN request."
+          gh release upload xlite-android -R "$R" --clobber out/XLite-android-arm64.apk
