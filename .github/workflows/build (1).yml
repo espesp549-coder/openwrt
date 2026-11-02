@@ -1,0 +1,462 @@
+name: Build OpenWrt 24.10.8 for 360T6M
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/openwrt/openwrt
+  REPO_TAG: v24.10.8
+  TARGET: ramips
+  SUBTARGET: mt7621
+  DEVICE_PKG: 360_t6m
+  DTS_FILE: mt7621_360t6m-fixed.dts
+  MK_SNIPPET: 360_t6m.mk
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout customization repo (files/)
+        uses: actions/checkout@v4
+
+      - name: Setup swap space
+        run: |
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          sudo docker image prune -a -f || true
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang flex bison gawk gettext git \
+            libncurses5-dev libssl-dev python3-distutils python3-setuptools \
+            rsync unzip zlib1g-dev file wget curl xsltproc libelf-dev \
+            libfuse-dev libsnmp-dev swig ccache cmake zstd device-tree-compiler
+
+      - name: Clone OpenWrt source (${{ env.REPO_TAG }})
+        run: |
+          git clone --branch openwrt-24.10 --single-branch --depth 1 $REPO_URL openwrt
+          cd openwrt
+          git fetch --depth 1 origin tag $REPO_TAG
+          git checkout $REPO_TAG
+          echo "===== SOURCE ====="
+          git log -1 --oneline
+
+      - name: Cache toolchain build directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            openwrt/staging_dir/host
+            openwrt/staging_dir/toolchain-*
+            openwrt/build_dir/toolchain-*
+          key: toolchain-${{ env.REPO_TAG }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-${{ hashFiles('openwrt/include/kernel-*.mk', 'openwrt/toolchain/**') }}
+          restore-keys: |
+            toolchain-${{ env.REPO_TAG }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-
+
+      - name: Cache downloaded package sources
+        uses: actions/cache@v4
+        with:
+          path: openwrt/dl
+          key: dl-${{ env.REPO_TAG }}-${{ hashFiles('openwrt/feeds.conf.default') }}
+          restore-keys: |
+            dl-${{ env.REPO_TAG }}-
+
+      - name: Update and install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Inject custom DTS (embedded)
+        run: |
+          cat << 'DTS_EOF' > openwrt/target/linux/ramips/dts/$DTS_FILE
+          /dts-v1/;
+
+          #include "mt7621.dtsi"
+          #include <dt-bindings/gpio/gpio.h>
+          #include <dt-bindings/input/input.h>
+
+          / {
+          	compatible = "360,360t6m", "mediatek,mt7621-soc";
+          	model = "360T6M";
+
+          	aliases {
+          		led-boot = &led_system;
+          		led-failsafe = &led_system;
+          		led-upgrade = &led_system;
+          	};
+
+          	chosen {
+          		bootargs = "console=ttyS0,115200";
+          	};
+
+          	leds {
+          		compatible = "gpio-leds";
+
+          		led_power: power {
+          			label = "red:power";
+          			gpios = <&gpio 13 GPIO_ACTIVE_HIGH>;
+          		};
+
+          		led_system: system {
+          			label = "green:system";
+          			gpios = <&gpio 15 GPIO_ACTIVE_LOW>;
+          		};
+          	};
+
+          	keys {
+          		compatible = "gpio-keys";
+
+          		reset {
+          			label = "reset";
+          			gpios = <&gpio 7 GPIO_ACTIVE_LOW>;
+          			linux,code = <KEY_RESTART>;
+          		};
+
+          		wps {
+          			label = "wps";
+          			gpios = <&gpio 6 GPIO_ACTIVE_LOW>;
+          			linux,code = <KEY_WPS_BUTTON>;
+          		};
+          	};
+          };
+
+          &nand {
+          	status = "okay";
+          	mediatek,nmbm;
+          	mediatek,bmt-max-ratio = <15>;
+          	mediatek,bmt-max-reserved-blocks = <64>;
+          	mediatek,bmt-remap-range = <0x200000 0x7d80000>;
+
+          	partitions {
+          		compatible = "fixed-partitions";
+          		#address-cells = <1>;
+          		#size-cells = <1>;
+
+          		partition@0 {
+          			label = "Bootloader";
+          			reg = <0x0 0x80000>;
+          		};
+
+          		partition@80000 {
+          			label = "Nvram";
+          			reg = <0x80000 0x40000>;
+          			read-only;
+          		};
+
+          		partition@c0000 {
+          			label = "Bdata";
+          			reg = <0xc0000 0x40000>;
+          			read-only;
+          		};
+
+          		factory: partition@100000 {
+          			label = "Factory";
+          			reg = <0x100000 0x80000>;
+          			read-only;
+          			compatible = "nvmem-cells";
+          			#address-cells = <1>;
+          			#size-cells = <1>;
+
+          			macaddr_factory_e000: macaddr@e000 {
+          				reg = <0xe000 0x6>;
+          			};
+
+          			macaddr_factory_e006: macaddr@e006 {
+          				reg = <0xe006 0x6>;
+          			};
+          		};
+
+          		partition@180000 {
+          			label = "crash";
+          			reg = <0x180000 0x40000>;
+          			read-only;
+          		};
+
+          		partition@1c0000 {
+          			label = "crash_log";
+          			reg = <0x1c0000 0x40000>;
+          			read-only;
+          		};
+
+          		partition@200000 {
+          			label = "kernel";
+          			reg = <0x200000 0x400000>;
+          		};
+
+          		partition@600000 {
+          			label = "ubi";
+          			/* ends at 0x7d80000 = end of NMBM remap range */
+          			reg = <0x600000 0x7780000>;
+          		};
+          	};
+          };
+
+          /* منفذ الـCPU المتصل بمحرك الإيثرنت (gmac0 موروث من mt7621.dtsi) */
+          &gmac0 {
+          	nvmem-cells = <&macaddr_factory_e000>;
+          	nvmem-cell-names = "mac-address";
+          };
+
+          /* تفعيل وتسمية منافذ سويتش DSA الفعلية على اللوحة */
+          &switch0 {
+          	ports {
+          		port@0 {
+          			status = "okay";
+          			label = "lan3";
+          		};
+
+          		port@1 {
+          			status = "okay";
+          			label = "lan2";
+          		};
+
+          		port@2 {
+          			status = "okay";
+          			label = "lan1";
+          		};
+
+          		port@3 {
+          			status = "okay";
+          			label = "wan";
+          			nvmem-cells = <&macaddr_factory_e006>;
+          			nvmem-cell-names = "mac-address";
+          		};
+          	};
+          };
+
+          /* تفعيل جسر PCIe (معطل افتراضيًا بالملف المشترك) */
+          &pcie {
+          	status = "okay";
+          };
+
+          /* شريحة الوايفاي MT7915 على المنفذ 1 - طابق هذا مع الفحص الفعلي بالأسفل */
+          &pcie1 {
+          	wifi@0,0 {
+          		compatible = "mediatek,mt76";
+          		reg = <0x0000 0 0 0 0>;
+          		mediatek,mtd-eeprom = <&factory 0x0>;
+          	};
+          };
+          DTS_EOF
+          ls -lh "openwrt/target/linux/ramips/dts/$DTS_FILE"
+
+      - name: Inject device definition into mt7621.mk (embedded)
+        run: |
+          cd openwrt
+          MK=target/linux/ramips/image/mt7621.mk
+          grep -q "Device/${DEVICE_PKG}" "$MK" && { echo "already defined, skipping"; exit 0; }
+          echo "" >> "$MK"
+          cat << 'MK_EOF' >> "$MK"
+          define Device/360_t6m
+            $(Device/nand)
+            DEVICE_VENDOR := 360
+            DEVICE_MODEL := T6M
+            DEVICE_DTS := mt7621_360t6m-fixed
+            SOC := mt7621
+            KERNEL_SIZE := 4096k
+            IMAGE_SIZE := 126464k
+            BLOCKSIZE := 128k
+            PAGESIZE := 2048
+            KERNEL_LOADADDR := 0x80001000
+            KERNEL := kernel-bin | append-dtb | lzma | uImage lzma
+            DEVICE_PACKAGES := -wpad-basic-mbedtls kmod-mt76-connac kmod-mt76-core kmod-mt7915-firmware kmod-mt7915e kmod-tun kmod-nft-tproxy wpad-openssl luci luci-ssl-openssl dropbear
+            SUPPORTED_DEVICES := 360,360t6m
+            IMAGES += factory.bin
+            IMAGE/factory.bin := append-kernel | pad-to $$(KERNEL_SIZE) | append-ubi | check-size
+            IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+          endef
+          TARGET_DEVICES += 360_t6m
+          MK_EOF
+          echo "Appended device block to $MK"
+
+      - name: Add 360T6M to board.d/02_network (3 LAN + WAN)
+        run: |
+          cd openwrt
+          NET=target/linux/ramips/mt7621/base-files/etc/board.d/02_network
+          grep -q "360,360t6m" "$NET" || sed -i '0,/^\tcase \$board in$/s//\tcase $board in\n\t360,360t6m)\n\t\tucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"\n\t\t;;/' "$NET"
+          grep -A2 "360,360t6m" "$NET" || { echo "ERROR: 02_network patch failed"; exit 1; }
+
+      - name: Enable flow offloading + generate .config for 24.10 (before DTS check)
+        run: |
+          cd openwrt
+          cat << 'EOF' > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7621=y
+          CONFIG_TARGET_ramips_mt7621_DEVICE_360_t6m=y
+          CONFIG_PACKAGE_kmod-nft-offload=y
+          EOF
+          make defconfig
+
+      - name: Sanity-check DTS against mt7621.dtsi (fail fast, before full build)
+        run: |
+          cd openwrt
+          DTS_DIR="target/linux/ramips/dts"
+          make target/linux/prepare V=s -j$(nproc) || true
+          KDIR=$(find build_dir -maxdepth 2 -type d -name "linux-ramips_mt7621*" | head -n1)
+          if [ -z "$KDIR" ]; then
+            echo "WARNING: couldn't locate prepared kernel dir; skipping pre-build DTS check."
+            exit 0
+          fi
+          INCLUDE_DIR="$KDIR/linux-6.6.*/include"
+          cpp -nostdinc -undef -x assembler-with-cpp \
+            -I "$DTS_DIR" -I $INCLUDE_DIR \
+            "$DTS_DIR/$DTS_FILE" -o /tmp/360t6m.pre.dts
+          dtc -@ -I dts -O dtb -o /tmp/360t6m.dtb /tmp/360t6m.pre.dts
+          dtc -I dtb -O dts /tmp/360t6m.dtb > /tmp/360t6m.decompiled.dts
+
+          echo "== Checking for required ethernet/switch/NMBM nodes =="
+          for pattern in "mediatek,mt7621-eth" "mediatek,mt7621" "label = \"lan1\"" "label = \"lan2\"" "label = \"lan3\"" "label = \"wan\"" "mediatek,nmbm"; do
+            if ! grep -q -- "$pattern" /tmp/360t6m.decompiled.dts; then
+              echo "ERROR: expected pattern not found in compiled devicetree: $pattern"
+              echo "الـDTS المُصرَّف ناقص هذا العنصر — أوقفنا البناء قبل لا نضيع وقت."
+              exit 1
+            fi
+          done
+          echo "DTS sanity check passed: eth + switch + all 4 port labels + NMBM present."
+
+      - name: Inject Performance & Kernel Optimizations (sysctl.conf)
+        run: |
+          mkdir -p openwrt/files/etc
+          cat << 'EOF' > openwrt/files/etc/sysctl.conf
+          vm.swappiness=10
+          vm.vfs_cache_pressure=50
+          net.core.netdev_max_backlog = 10000
+          net.core.somaxconn = 1024
+          net.ipv4.tcp_max_syn_backlog = 8192
+          net.ipv4.tcp_fin_timeout = 15
+          net.ipv4.tcp_tw_reuse = 1
+          net.core.rmem_max = 16777216
+          net.core.wmem_max = 16777216
+          net.ipv4.tcp_rmem = 4096 87380 16777216
+          net.ipv4.tcp_wmem = 4096 65536 16777216
+          EOF
+          echo "Performance sysctl.conf injected successfully."
+
+      - name: Enable flow offloading in firewall defaults
+        run: |
+          mkdir -p openwrt/files/etc/uci-defaults
+          cat << 'EOF' > openwrt/files/etc/uci-defaults/98_flow_offloading
+          #!/bin/sh
+          uci set firewall.@defaults[0].flow_offloading='1'
+          uci set firewall.@defaults[0].flow_offloading_hw='0'
+          uci commit firewall
+          exit 0
+          EOF
+          chmod +x openwrt/files/etc/uci-defaults/98_flow_offloading
+
+      - name: Set LED status and generate unique random MAC per device
+        run: |
+          mkdir -p openwrt/files/etc/uci-defaults
+          cat << 'EOF' > openwrt/files/etc/uci-defaults/97_led_and_mac
+          #!/bin/sh
+
+          # ===== LED =====
+          uci set system.led_status='led'
+          uci set system.led_status.name='status'
+          uci set system.led_status.sysfs='green:system'
+          uci set system.led_status.trigger='default-on'
+          uci set system.led_off='led'
+          uci set system.led_off.name='power-red-off'
+          uci set system.led_off.sysfs='red:power'
+          uci set system.led_off.trigger='none'
+          uci commit system
+
+          # ===== ماك عشوائي فريد لكل جهاز =====
+          RAND_MAC_LAN="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
+          RAND_MAC_R0="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
+          RAND_MAC_R1="d2:$(hexdump -n5 -e '/1 "%02x:"' /dev/urandom | sed 's/:$//')"
+
+          uci set network.lan.macaddr="$RAND_MAC_LAN"
+          uci commit network
+
+          uci set wireless.radio0.macaddr="$RAND_MAC_R0"
+          uci set wireless.radio1.macaddr="$RAND_MAC_R1"
+          uci commit wireless
+
+          exit 0
+          EOF
+          chmod +x openwrt/files/etc/uci-defaults/97_led_and_mac
+
+      # ===== جلب الـ Vermagic الرسمي أثناء البناء وحقنه في السكريبت =====
+      - name: Fetch Official Vermagic & Inject Spoofing Script
+        run: |
+          # 1. نسخ الملفات العامة من مجلد files إن وجدت
+          if [ -d "files" ]; then
+            mkdir -p openwrt/files
+            rsync -av --exclude="$DTS_FILE" --exclude="$MK_SNIPPET" files/ openwrt/files/
+          fi
+
+          # 2. سحب الـ Vermagic الرسمي أثناء بناء غيت هب (وهو متصل بالإنترنت)
+          OFFICIAL_VERMAGIC=$(curl -s "https://downloads.openwrt.org/releases/24.10.8/targets/ramips/mt7621/packages/Packages.gz" | zcat | grep -A10 '^Package: kernel$' | grep '^Version:' | cut -d' ' -f2)
+          echo "Official Vermagic fetched: $OFFICIAL_VERMAGIC"
+          if [ -z "$OFFICIAL_VERMAGIC" ]; then
+            echo "ERROR: vermagic fetch failed, empty value would break opkg"
+            exit 1
+          fi
+
+          # 3. إنشاء مجلد uci-defaults وحقن السكريبت بالهاش الثابت
+          mkdir -p openwrt/files/etc/uci-defaults
+          cat << EOF > openwrt/files/etc/uci-defaults/99-fix-vermagic
+          #!/bin/sh
+          [ -f /usr/lib/opkg/info/kernel.control ] && sed -i "s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/info/kernel.control
+          [ -f /usr/lib/opkg/status ] && sed -i "/^Package: kernel$/,/^$/s/^Version: .*/Version: $OFFICIAL_VERMAGIC/" /usr/lib/opkg/status
+          exit 0
+          EOF
+
+          chmod +x openwrt/files/etc/uci-defaults/99-fix-vermagic
+          echo "Vermagic script embedded with static official hash successfully."
+
+      - name: Download package sources
+        run: |
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Build firmware
+        run: |
+          cd openwrt
+          make -j$(nproc) V=s || make -j1 V=s
+
+      - name: Verify built firmware path & files
+        run: |
+          TARGET_DIR="openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}"
+          echo "Checking firmware output directory: $TARGET_DIR"
+          if [ -d "$TARGET_DIR" ]; then
+            echo "Directory exists. Contents:"
+            ls -lh "$TARGET_DIR"
+            if ls "$TARGET_DIR"/*360* 1> /dev/null 2>&1; then
+              echo "Firmware bin files for 360T6M generated successfully!"
+            else
+              echo "ERROR: 360T6M bin files not found in output directory!"
+              exit 1
+            fi
+          else
+            echo "ERROR: Firmware output directory does not exist!"
+            exit 1
+          fi
+
+      - name: List firmware
+        if: success()
+        run: |
+          find openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/ -maxdepth 1 -type f -printf '%f\n' | sort
+
+      - name: Upload firmware artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt-24.10.8-360T6M-${{ github.run_number }}
+          path: openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/*
+          if-no-files-found: error
