@@ -1,0 +1,49 @@
+name: MX2000 firmware to release
+
+# Puts the sysupgrade file of one firmware build (an Actions artifact, which needs a GitHub login)
+# on the release "fw", so the router can download it itself with wget.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: "Build number (the number at the end of the artifact name, e.g. 44)"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Artifact -> release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R: ${{ github.repository }}
+          N: ${{ inputs.build }}
+        run: |
+          set -e
+          case "$N" in ''|*[!0-9]*) echo "the build must be a number"; exit 1 ;; esac
+          url=$(gh api "repos/$R/actions/artifacts?per_page=100" \
+            --jq "[.artifacts[] | select((.name | startswith(\"OpenWrt-\")) and (.name | endswith(\"-$N\")) and (.expired | not))][0].archive_download_url")
+          [ -n "$url" ] && [ "$url" != null ] || { echo "no artifact OpenWrt-*-$N (wrong number, or expired)"; exit 1; }
+          gh api "$url" > a.zip
+          mkdir a && unzip -q a.zip -d a
+          find a -type f | sed 's/^/  /'
+          f=$(find a -type f -name '*sysupgrade*.bin' | head -n 1)
+          [ -n "$f" ] || f=$(find a -type f -name '*sysupgrade*' | head -n 1)
+          [ -n "$f" ] || { echo "no sysupgrade file in the artifact"; exit 1; }
+          cp "$f" mx2000-sysupgrade.bin
+          sha256sum mx2000-sysupgrade.bin | awk '{print $1}' > mx2000-sysupgrade.bin.sha256
+          echo "build $N: $(basename "$f")" > mx2000-sysupgrade.txt
+          gh release view fw -R "$R" > /dev/null 2>&1 || \
+            gh release create fw -R "$R" --title "MX2000 firmware" --notes "sysupgrade file for the router (wget)" --prerelease --latest=false
+          gh release upload fw -R "$R" --clobber mx2000-sysupgrade.bin mx2000-sysupgrade.bin.sha256 mx2000-sysupgrade.txt
+          {
+            echo "### build $N on release fw"
+            echo "- file: $(basename "$f")"
+            echo "- sha256: $(cat mx2000-sysupgrade.bin.sha256)"
+            echo "- link: https://github.com/$R/releases/download/fw/mx2000-sysupgrade.bin"
+          } >> "$GITHUB_STEP_SUMMARY"
